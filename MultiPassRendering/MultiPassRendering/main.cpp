@@ -27,7 +27,7 @@ namespace
     const int kWindowHeight = 900;
     const float kCameraMoveSpeed = 12.0f;
     const float kCameraRotationSpeed = 0.005f;
-    const float kLoadedMeshDistance = 20.0f;
+    const float kLoadedMeshDistance = 2.0f;
 }
 
 LPDIRECT3D9 g_pD3D = NULL;
@@ -190,7 +190,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
         }
         else
         {
-            Sleep(16);
+            // Sleep(16);
             UpdateFrame();
             RenderPass1();
             RenderPass2();
