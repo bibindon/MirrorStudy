@@ -61,6 +61,8 @@ struct MeshInstance
     D3DXVECTOR3 center = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
     float radius = 1.0f;
     D3DXVECTOR3 position = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+    D3DXVECTOR3 mirrorPlanePoint = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+    D3DXVECTOR3 mirrorPlaneNormal = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
     bool isMirrorSurface = false;
     bool isGroundSurface = false;
 };
@@ -108,6 +110,7 @@ static bool OpenMeshFileDialog(HWND hWnd);
 static std::basic_string<TCHAR> BuildTexturePath(const TCHAR* meshPath, const char* textureFileName);
 static HRESULT GetOrCreateTexture(const std::basic_string<TCHAR>& texturePath, LPDIRECT3DTEXTURE9* ppTexture);
 static void ReleaseTextureCache();
+static bool ComputeMirrorPlaneFromMesh(LPD3DXMESH pMesh, D3DXVECTOR3* pPlanePoint, D3DXVECTOR3* pPlaneNormal);
 static void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
                                        const D3DXMATRIX& proj,
                                        bool skipMirrorSurface,
@@ -283,7 +286,7 @@ void InitD3D(HWND hWnd)
                                              true);
     assert(bPlateLoadResult);
 
-    bool bMirrorLoadResult = AddMeshFromXFile(_T("res\\plate.mirror.x"),
+    bool bMirrorLoadResult = AddMeshFromXFile(_T("res\\plate.mirror.wall.x"),
                                               D3DXVECTOR3(0.0f, 0.1f, 0.0f),
                                               false,
                                               true,
@@ -449,6 +452,15 @@ bool AddMeshFromXFile(const TCHAR* pPath,
     instance.isMirrorSurface = isMirrorSurface;
     instance.isGroundSurface = isGroundSurface;
 
+    if (isMirrorSurface)
+    {
+        bool bPlaneComputed = ComputeMirrorPlaneFromMesh(instance.pMesh,
+                                                         &instance.mirrorPlanePoint,
+                                                         &instance.mirrorPlaneNormal);
+        assert(bPlaneComputed);
+        instance.mirrorPlanePoint += instance.position;
+    }
+
     g_meshInstances.push_back(instance);
 
     return true;
@@ -527,6 +539,87 @@ void ReleaseTextureCache()
     }
 
     g_textureCache.clear();
+}
+
+bool ComputeMirrorPlaneFromMesh(LPD3DXMESH pMesh, D3DXVECTOR3* pPlanePoint, D3DXVECTOR3* pPlaneNormal)
+{
+    if (pMesh == NULL || pPlanePoint == NULL || pPlaneNormal == NULL)
+    {
+        return false;
+    }
+
+    if ((pMesh->GetFVF() & D3DFVF_XYZ) == 0 || pMesh->GetNumFaces() == 0)
+    {
+        return false;
+    }
+
+    void* pVertices = NULL;
+    HRESULT hResult = pMesh->LockVertexBuffer(D3DLOCK_READONLY, &pVertices);
+    if (FAILED(hResult))
+    {
+        return false;
+    }
+
+    LPDIRECT3DINDEXBUFFER9 pIndexBuffer = NULL;
+    hResult = pMesh->GetIndexBuffer(&pIndexBuffer);
+    if (FAILED(hResult))
+    {
+        pMesh->UnlockVertexBuffer();
+        return false;
+    }
+
+    void* pIndices = NULL;
+    hResult = pIndexBuffer->Lock(0, 0, &pIndices, D3DLOCK_READONLY);
+    if (FAILED(hResult))
+    {
+        SAFE_RELEASE(pIndexBuffer);
+        pMesh->UnlockVertexBuffer();
+        return false;
+    }
+
+    const UINT vertexStride = pMesh->GetNumBytesPerVertex();
+    const BYTE* pVertexBytes = static_cast<const BYTE*>(pVertices);
+    DWORD i0 = 0;
+    DWORD i1 = 0;
+    DWORD i2 = 0;
+
+    if ((pMesh->GetOptions() & D3DXMESH_32BIT) != 0)
+    {
+        const DWORD* pIndexData = static_cast<const DWORD*>(pIndices);
+        i0 = pIndexData[0];
+        i1 = pIndexData[1];
+        i2 = pIndexData[2];
+    }
+    else
+    {
+        const WORD* pIndexData = static_cast<const WORD*>(pIndices);
+        i0 = pIndexData[0];
+        i1 = pIndexData[1];
+        i2 = pIndexData[2];
+    }
+
+    const D3DXVECTOR3& v0 = *reinterpret_cast<const D3DXVECTOR3*>(pVertexBytes + vertexStride * i0);
+    const D3DXVECTOR3& v1 = *reinterpret_cast<const D3DXVECTOR3*>(pVertexBytes + vertexStride * i1);
+    const D3DXVECTOR3& v2 = *reinterpret_cast<const D3DXVECTOR3*>(pVertexBytes + vertexStride * i2);
+
+    D3DXVECTOR3 edge1 = v1 - v0;
+    D3DXVECTOR3 edge2 = v2 - v0;
+    D3DXVECTOR3 normal;
+    D3DXVec3Cross(&normal, &edge1, &edge2);
+
+    const bool isValidNormal = D3DXVec3LengthSq(&normal) > 0.0f;
+    if (isValidNormal)
+    {
+        D3DXVec3Normalize(&normal, &normal);
+        *pPlanePoint = v0;
+        *pPlaneNormal = normal;
+    }
+
+    pIndexBuffer->Unlock();
+    SAFE_RELEASE(pIndexBuffer);
+    pMesh->UnlockVertexBuffer();
+
+    return isValidNormal;
 }
 
 void UpdateFrame()
@@ -772,8 +865,12 @@ void RenderMirrorTexture()
     assert(hResult == S_OK);
 
     D3DXMATRIX matReflection;
-    const float mirrorPlaneY = pMirrorMesh->position.y;
-    D3DXPLANE mirrorPlane(0.0f, 1.0f, 0.0f, -mirrorPlaneY);
+    const D3DXVECTOR3& planePoint = pMirrorMesh->mirrorPlanePoint;
+    const D3DXVECTOR3& planeNormal = pMirrorMesh->mirrorPlaneNormal;
+    D3DXPLANE mirrorPlane(planeNormal.x,
+                          planeNormal.y,
+                          planeNormal.z,
+                          -D3DXVec3Dot(&planeNormal, &planePoint));
     D3DXMatrixReflect(&matReflection, &mirrorPlane);
 
     D3DXVECTOR3 eye = g_cameraPosition;
