@@ -45,10 +45,10 @@ D3DXMATRIX g_matMirrorViewProj;
 
 LPDIRECT3DVERTEXDECLARATION9 g_pQuadDecl = NULL;
 HWND g_hWnd = NULL;
-bool g_bMouseInitialized = false;
-POINT g_prevMousePos = { 0, 0 };
 LARGE_INTEGER g_qpcFrequency = { };
 LARGE_INTEGER g_prevFrameCounter = { };
+// カーソル非表示時は毎フレームこの中心へ戻し、差分だけを視点回転へ使う。
+bool g_bCursorLocked = true;
 
 D3DXVECTOR3 g_cameraPosition(0.0f, 5.0f, -15.0f);
 float g_cameraYaw = 0.0f;
@@ -63,6 +63,7 @@ struct MeshInstance
     D3DXVECTOR3 center = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
     float radius = 1.0f;
     D3DXVECTOR3 position = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+    // 鏡面だけはメッシュ形状から取り出した平面情報を反射カメラ生成へ使う。
     D3DXVECTOR3 mirrorPlanePoint = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
     D3DXVECTOR3 mirrorPlaneNormal = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
     bool isMirrorSurface = false;
@@ -71,6 +72,7 @@ struct MeshInstance
 
 struct TextureCacheEntry
 {
+    // XファイルごとのTextureFilenameを絶対パス化して共有キーにしている。
     std::basic_string<TCHAR> path;
     LPDIRECT3DTEXTURE9 pTexture = NULL;
 };
@@ -106,6 +108,7 @@ static bool AddMeshFromXFile(const TCHAR* pPath,
 static void ReleaseMeshResources();
 static void UpdateCamera(float deltaTime);
 static void UpdateFrame();
+static void UpdateMouseLook();
 static D3DXVECTOR3 GetCameraForward();
 static D3DXVECTOR3 GetCameraFocusPoint();
 static bool OpenMeshFileDialog(HWND hWnd);
@@ -120,6 +123,8 @@ static void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
                                        bool useMirrorTextureForMirrorSurface);
 static void RenderMirrorTexture();
 static MeshInstance* GetMirrorMeshInstance();
+static POINT GetClientCenterScreenPoint(HWND hWnd);
+static void SetCursorLocked(bool isLocked);
 
 LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -179,6 +184,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
     QueryPerformanceFrequency(&g_qpcFrequency);
     QueryPerformanceCounter(&g_prevFrameCounter);
     D3DXMatrixIdentity(&g_matMirrorViewProj);
+    SetCursorLocked(true);
 
     MSG msg;
 
@@ -356,6 +362,7 @@ void InitD3D(HWND hWnd)
 
 void Cleanup()
 {
+    SetCursorLocked(false);
     ReleaseMeshResources();
     ReleaseTextureCache();
     SAFE_RELEASE(g_pEffect1);
@@ -396,6 +403,7 @@ bool AddMeshFromXFile(const TCHAR* pPath,
     }
 
     std::vector<D3DMATERIAL9> materials(dwNumMaterials);
+    // マテリアルごとに保持する参照は、共有テクスチャキャッシュから受け取る。
     std::vector<LPDIRECT3DTEXTURE9> textures(dwNumMaterials, NULL);
 
     D3DXMATERIAL* d3dxMaterials = (D3DXMATERIAL*)pD3DXMtrlBuffer->GetBufferPointer();
@@ -548,6 +556,7 @@ HRESULT GetOrCreateTexture(const std::basic_string<TCHAR>& texturePath, LPDIRECT
 
 void ReleaseTextureCache()
 {
+    // キャッシュ自身が1参照を持ち、各メッシュが別途AddRefした参照を持つ。
     for (auto& cacheEntry : g_textureCache)
     {
         SAFE_RELEASE(cacheEntry.pTexture);
@@ -673,7 +682,44 @@ void UpdateFrame()
         deltaTime = 0.1f;
     }
 
+    UpdateMouseLook();
     UpdateCamera(deltaTime);
+}
+
+void UpdateMouseLook()
+{
+    if (!g_bCursorLocked || g_hWnd == NULL)
+    {
+        return;
+    }
+
+    // 画面中央との差分だけを視点回転へ使い、読み取り後は中央へ戻す。
+    POINT centerScreenPos = GetClientCenterScreenPoint(g_hWnd);
+    POINT currentScreenPos = { };
+    BOOL bCursorRead = GetCursorPos(&currentScreenPos);
+    assert(bCursorRead != FALSE);
+
+    LONG deltaX = currentScreenPos.x - centerScreenPos.x;
+    LONG deltaY = currentScreenPos.y - centerScreenPos.y;
+
+    if (deltaX != 0 || deltaY != 0)
+    {
+        g_cameraYaw += static_cast<float>(deltaX) * kCameraRotationSpeed;
+        g_cameraPitch -= static_cast<float>(deltaY) * kCameraRotationSpeed;
+
+        const float pitchLimit = D3DXToRadian(89.0f);
+        if (g_cameraPitch > pitchLimit)
+        {
+            g_cameraPitch = pitchLimit;
+        }
+        else if (g_cameraPitch < -pitchLimit)
+        {
+            g_cameraPitch = -pitchLimit;
+        }
+    }
+
+    BOOL bCursorMoved = SetCursorPos(centerScreenPos.x, centerScreenPos.y);
+    assert(bCursorMoved != FALSE);
 }
 
 void UpdateCamera(float deltaTime)
@@ -765,7 +811,12 @@ bool OpenMeshFileDialog(HWND hWnd)
     }
 
     bool bLoaded = AddMeshFromXFile(szFile, GetCameraFocusPoint(), true);
-    g_bMouseInitialized = false;
+    if (g_bCursorLocked)
+    {
+        POINT centerScreenPos = GetClientCenterScreenPoint(hWnd);
+        BOOL bCursorMoved = SetCursorPos(centerScreenPos.x, centerScreenPos.y);
+        assert(bCursorMoved != FALSE);
+    }
     return bLoaded;
 }
 
@@ -801,12 +852,55 @@ MeshInstance* GetMirrorMeshInstance()
     return NULL;
 }
 
+POINT GetClientCenterScreenPoint(HWND hWnd)
+{
+    RECT clientRect = { };
+    BOOL bGotRect = GetClientRect(hWnd, &clientRect);
+    assert(bGotRect != FALSE);
+
+    POINT centerScreenPos = { };
+    centerScreenPos.x = (clientRect.left + clientRect.right) / 2;
+    centerScreenPos.y = (clientRect.top + clientRect.bottom) / 2;
+
+    BOOL bConverted = ClientToScreen(hWnd, &centerScreenPos);
+    assert(bConverted != FALSE);
+    return centerScreenPos;
+}
+
+void SetCursorLocked(bool isLocked)
+{
+    g_bCursorLocked = isLocked;
+
+    if (g_hWnd == NULL)
+    {
+        return;
+    }
+
+    if (isLocked)
+    {
+        while (ShowCursor(FALSE) >= 0)
+        {
+        }
+
+        POINT centerScreenPos = GetClientCenterScreenPoint(g_hWnd);
+        BOOL bCursorMoved = SetCursorPos(centerScreenPos.x, centerScreenPos.y);
+        assert(bCursorMoved != FALSE);
+    }
+    else
+    {
+        while (ShowCursor(TRUE) < 0)
+        {
+        }
+    }
+}
+
 void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
                                 const D3DXMATRIX& proj,
                                 bool skipMirrorSurface,
                                 bool skipGroundSurface,
                                 bool useMirrorTextureForMirrorSurface)
 {
+    // この関数は「指定されたカメラで3Dメッシュ群を1回描く」処理だけを担当する。
     HRESULT hResult = g_pEffect1->SetTechnique("Technique1");
     assert(hResult == S_OK);
 
@@ -842,6 +936,7 @@ void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
         hResult = g_pEffect1->SetMatrix("g_matWorldViewProj", &matWorldViewProj);
         assert(hResult == S_OK);
 
+        // 鏡面だけは、反射RTを通常テクスチャの代わりに読む分岐へ切り替える。
         const bool useMirrorTexture = useMirrorTextureForMirrorSurface && meshInstance.isMirrorSurface && g_pMirrorRenderTarget != NULL;
         hResult = g_pEffect1->SetBool("g_bUseLighting", !useMirrorTexture);
         assert(hResult == S_OK);
@@ -902,6 +997,7 @@ void RenderMirrorTexture()
     hResult = g_pd3dDevice->SetRenderTarget(0, pMirrorRenderSurface);
     assert(hResult == S_OK);
 
+    // 鏡メッシュから抽出した平面で通常カメラを反転し、反射カメラを組み立てる。
     D3DXMATRIX matReflection;
     const D3DXVECTOR3& planePoint = pMirrorMesh->mirrorPlanePoint;
     const D3DXVECTOR3& planeNormal = pMirrorMesh->mirrorPlaneNormal;
@@ -932,7 +1028,7 @@ void RenderMirrorTexture()
                                1.0f,
                                10000.0f);
 
-    // 後段の鏡面サンプリングで使うため、鏡カメラのViewProjectionを保持する。
+    // 鏡面描画時の射影UV生成にそのまま使う。
     g_matMirrorViewProj = view * proj;
 
     hResult = g_pd3dDevice->Clear(0,
@@ -967,6 +1063,7 @@ void RenderPass1()
 {
     HRESULT hResult = E_FAIL;
 
+    // 反射RTを先に更新してから、通常カメラ視点のシーンを別RTへ描く。
     RenderMirrorTexture();
 
     LPDIRECT3DSURFACE9 pOldRenderTarget = nullptr;
@@ -1008,7 +1105,7 @@ void RenderPass1()
     assert(hResult == S_OK);
 
     TCHAR msg[100];
-    _tcscpy_s(msg, 100, _T("WASD:移動  Q/E:下降/上昇  マウス:回転  F1:Xファイル読込"));
+    _tcscpy_s(msg, 100, _T("WASD:移動  Q/E:下降/上昇  Esc:カーソル切替  F1:Xファイル読込"));
     TextDraw(g_pFont, msg, 0, 0);
 
     RenderSceneToCurrentTarget(View, Proj, false, false, true);
@@ -1032,7 +1129,7 @@ void RenderPass2()
                                   0);
     assert(hResult == S_OK);
 
-    // 2Dフルスクリーン描画なのでZは不要
+    // 最終表示はRenderPass1の結果をそのまま全画面へ転送する。
     hResult = g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
     assert(hResult == S_OK);
 
@@ -1123,43 +1220,29 @@ LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_bClose = true;
         return 0;
     }
-    case WM_MOUSEMOVE:
+    case WM_KEYDOWN:
     {
-        POINT currentMousePos;
-        currentMousePos.x = GET_X_LPARAM(lParam);
-        currentMousePos.y = GET_Y_LPARAM(lParam);
-
-        if (!g_bMouseInitialized)
+        if (wParam == VK_ESCAPE && (lParam & 0x40000000) == 0)
         {
-            g_prevMousePos = currentMousePos;
-            g_bMouseInitialized = true;
+            SetCursorLocked(!g_bCursorLocked);
             return 0;
         }
 
-        LONG deltaX = currentMousePos.x - g_prevMousePos.x;
-        LONG deltaY = currentMousePos.y - g_prevMousePos.y;
-        g_prevMousePos = currentMousePos;
-
-        g_cameraYaw += static_cast<float>(deltaX) * kCameraRotationSpeed;
-        g_cameraPitch -= static_cast<float>(deltaY) * kCameraRotationSpeed;
-
-        const float pitchLimit = D3DXToRadian(89.0f);
-        if (g_cameraPitch > pitchLimit)
-        {
-            g_cameraPitch = pitchLimit;
-        }
-        else if (g_cameraPitch < -pitchLimit)
-        {
-            g_cameraPitch = -pitchLimit;
-        }
-
-        return 0;
-    }
-    case WM_KEYDOWN:
-    {
         if (wParam == VK_F1 && (lParam & 0x40000000) == 0)
         {
+            const bool wasCursorLocked = g_bCursorLocked;
+            if (wasCursorLocked)
+            {
+                SetCursorLocked(false);
+            }
+
             OpenMeshFileDialog(hWnd);
+
+            if (wasCursorLocked)
+            {
+                SetCursorLocked(true);
+            }
+
             return 0;
         }
         break;

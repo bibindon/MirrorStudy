@@ -25,6 +25,7 @@ void VertexShader1(in  float4 inPosition  : POSITION,
                    out float4 outTexCood  : TEXCOORD0,
                    out float4 outMirrorProj : TEXCOORD1)
 {
+    // é¡é¢ã ã‘ã¯ãƒ¯ãƒ¼ãƒ«ãƒ‰åº§æ¨™ã‚’é¡ã‚«ãƒ¡ãƒ©ã¸å°„å½±ã—ã€ãã®çµæžœã‹ã‚‰åå°„RTã®UVã‚’ä½œã‚‹ã€‚
     float4 worldPos = mul(inPosition, g_matWorld);
     outPosition = mul(inPosition, g_matWorldViewProj);
     outMirrorProj = mul(worldPos, g_matMirrorViewProj);
@@ -51,7 +52,7 @@ void PixelShader1(in float4 inScreenColor : COLOR0,
 {
     float4 workColor = (float4)0;
 
-    // é¡é¢ã ã‘ã¯é¡ã‚«ãƒ¡ãƒ©ã®å°„å½±åº§æ¨™ã‹ã‚‰UVã‚’ä½œã£ã¦åå°„RTã‚’èª­ã‚€ã€‚
+    // Ã©ÂÂ¡Ã©ÂÂ¢Ã£ÂÂ Ã£Ââ€˜Ã£ÂÂ¯Ã©ÂÂ¡Ã£â€šÂ«Ã£Æ’Â¡Ã£Æ’Â©Ã£ÂÂ®Ã¥Â°â€žÃ¥Â½Â±Ã¥ÂºÂ§Ã¦Â¨â„¢Ã£Ââ€¹Ã£â€šâ€°UVÃ£â€šâ€™Ã¤Â½Å“Ã£ÂÂ£Ã£ÂÂ¦Ã¥ÂÂÃ¥Â°â€žRTÃ£â€šâ€™Ã¨ÂªÂ­Ã£â€šâ‚¬Ã£â‚¬â€š
     if (g_bMirrorSurface)
     {
         float2 uv;
