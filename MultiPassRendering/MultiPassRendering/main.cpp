@@ -290,7 +290,7 @@ void InitD3D(HWND hWnd)
     assert(bPlateLoadResult);
 
     bool bMirrorLoadResult = AddMeshFromXFile(_T("res\\plate.mirror.x"),
-                                              D3DXVECTOR3(0.0f, 0.1f, 0.0f),
+                                              D3DXVECTOR3(0.0f, 10.1f, 0.0f),
                                               false,
                                               true,
                                               false);
