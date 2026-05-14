@@ -7,24 +7,32 @@
 
 #include <d3d9.h>
 #include <d3dx9.h>
+#include <commdlg.h>
+#include <windowsx.h>
+#include <shlwapi.h>
 #include <string>
 #include <tchar.h>
 #include <cassert>
 #include <crtdbg.h>
 #include <vector>
 
+#pragma comment( lib, "comdlg32.lib" )
+#pragma comment( lib, "shlwapi.lib" )
+
 #define SAFE_RELEASE(p) { if (p) { (p)->Release(); (p) = NULL; } }
+
+namespace
+{
+    const int kWindowWidth = 1600;
+    const int kWindowHeight = 900;
+    const float kCameraMoveSpeed = 12.0f;
+    const float kCameraRotationSpeed = 0.005f;
+    const float kLoadedMeshDistance = 20.0f;
+}
 
 LPDIRECT3D9 g_pD3D = NULL;
 LPDIRECT3DDEVICE9 g_pd3dDevice = NULL;
 LPD3DXFONT g_pFont = NULL;
-LPD3DXMESH g_pMesh = NULL;
-
-LPD3DXMESH g_pMeshSphere = NULL;
-
-std::vector<D3DMATERIAL9> g_pMaterials;
-std::vector<LPDIRECT3DTEXTURE9> g_pTextures;
-DWORD g_dwNumMaterials = 0;
 LPD3DXEFFECT g_pEffect1 = NULL;
 LPD3DXEFFECT g_pEffect2 = NULL;
 
@@ -33,6 +41,28 @@ bool g_bClose = false;
 LPDIRECT3DTEXTURE9 g_pRenderTarget = NULL;
 
 LPDIRECT3DVERTEXDECLARATION9 g_pQuadDecl = NULL;
+HWND g_hWnd = NULL;
+bool g_bMouseInitialized = false;
+POINT g_prevMousePos = { 0, 0 };
+LARGE_INTEGER g_qpcFrequency = { };
+LARGE_INTEGER g_prevFrameCounter = { };
+
+D3DXVECTOR3 g_cameraPosition(0.0f, 5.0f, -15.0f);
+float g_cameraYaw = 0.0f;
+float g_cameraPitch = 0.0f;
+
+struct MeshInstance
+{
+    LPD3DXMESH pMesh = NULL;
+    std::vector<D3DMATERIAL9> materials;
+    std::vector<LPDIRECT3DTEXTURE9> textures;
+    DWORD numMaterials = 0;
+    D3DXVECTOR3 center = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+    float radius = 1.0f;
+    D3DXVECTOR3 position = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+};
+
+std::vector<MeshInstance> g_meshInstances;
 
 struct QuadVertex
 {
@@ -54,6 +84,14 @@ static void Cleanup();
 static void RenderPass1();
 static void RenderPass2();
 static void DrawFullscreenQuad();
+static bool AddMeshFromXFile(const TCHAR* pPath, const D3DXVECTOR3& position);
+static void ReleaseMeshResources();
+static void UpdateCamera(float deltaTime);
+static void UpdateFrame();
+static D3DXVECTOR3 GetCameraForward();
+static D3DXVECTOR3 GetCameraFocusPoint();
+static bool OpenMeshFileDialog(HWND hWnd);
+static std::basic_string<TCHAR> BuildTexturePath(const TCHAR* meshPath, const char* textureFileName);
 
 LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -87,7 +125,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
     assert(atom != 0);
 
     RECT rect;
-    SetRect(&rect, 0, 0, 640, 480);
+    SetRect(&rect, 0, 0, kWindowWidth, kWindowHeight);
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
     rect.right = rect.right - rect.left;
     rect.bottom = rect.bottom - rect.top;
@@ -105,10 +143,13 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
                              NULL,
                              wc.hInstance,
                              NULL);
+    g_hWnd = hWnd;
 
     InitD3D(hWnd);
     ShowWindow(hWnd, SW_SHOWDEFAULT);
     UpdateWindow(hWnd);
+    QueryPerformanceFrequency(&g_qpcFrequency);
+    QueryPerformanceCounter(&g_prevFrameCounter);
 
     MSG msg;
 
@@ -121,7 +162,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
         else
         {
             Sleep(16);
-
+            UpdateFrame();
             RenderPass1();
             RenderPass2();
         }
@@ -166,6 +207,8 @@ void InitD3D(HWND hWnd)
     d3dpp.Windowed = TRUE;
     d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
     d3dpp.BackBufferFormat = D3DFMT_UNKNOWN;
+    d3dpp.BackBufferWidth = kWindowWidth;
+    d3dpp.BackBufferHeight = kWindowHeight;
     d3dpp.BackBufferCount = 1;
     d3dpp.MultiSampleType = D3DMULTISAMPLE_NONE;
     d3dpp.MultiSampleQuality = 0;
@@ -210,66 +253,11 @@ void InitD3D(HWND hWnd)
 
     assert(hResult == S_OK);
 
-    LPD3DXBUFFER pD3DXMtrlBuffer = NULL;
+    bool bPlateLoadResult = AddMeshFromXFile(_T("res\\plate.x"), D3DXVECTOR3(0.0f, 0.0f, 0.0f));
+    assert(bPlateLoadResult);
 
-    hResult = D3DXLoadMeshFromX(_T("cube.x"),
-                                D3DXMESH_SYSTEMMEM,
-                                g_pd3dDevice,
-                                NULL,
-                                &pD3DXMtrlBuffer,
-                                NULL,
-                                &g_dwNumMaterials,
-                                &g_pMesh);
-
-    assert(hResult == S_OK);
-
-    D3DXMATERIAL* d3dxMaterials = (D3DXMATERIAL*)pD3DXMtrlBuffer->GetBufferPointer();
-    g_pMaterials.resize(g_dwNumMaterials);
-    g_pTextures.resize(g_dwNumMaterials);
-
-    for (DWORD i = 0; i < g_dwNumMaterials; i++)
-    {
-        g_pMaterials[i] = d3dxMaterials[i].MatD3D;
-        g_pMaterials[i].Ambient = g_pMaterials[i].Diffuse;
-        g_pTextures[i] = NULL;
-        
-        //--------------------------------------------------------------
-        // Unicode文字セットでもマルチバイト文字セットでも
-        // "d3dxMaterials[i].pTextureFilename"はマルチバイト文字セットになる。
-        // 
-        // 一方で、D3DXCreateTextureFromFileはプロジェクト設定で
-        // Unicode文字セットかマルチバイト文字セットか変わる。
-        //--------------------------------------------------------------
-
-        std::string pTexPath(d3dxMaterials[i].pTextureFilename);
-
-        if (!pTexPath.empty())
-        {
-            bool bUnicode = false;
-
-#ifdef UNICODE
-            bUnicode = true;
-#endif
-
-            if (!bUnicode)
-            {
-                hResult = D3DXCreateTextureFromFileA(g_pd3dDevice, pTexPath.c_str(), &g_pTextures[i]);
-                assert(hResult == S_OK);
-            }
-            else
-            {
-                int len = MultiByteToWideChar(CP_ACP, 0, pTexPath.c_str(), -1, nullptr, 0);
-                std::wstring pTexPathW(len, 0);
-                MultiByteToWideChar(CP_ACP, 0, pTexPath.c_str(), -1, &pTexPathW[0], len);
-
-                hResult = D3DXCreateTextureFromFileW(g_pd3dDevice, pTexPathW.c_str(), &g_pTextures[i]);
-                assert(hResult == S_OK);
-            }
-        }
-    }
-
-    hResult = pD3DXMtrlBuffer->Release();
-    assert(hResult == S_OK);
+    bool bCubeLoadResult = AddMeshFromXFile(_T("res\\cubeNormalInverse.x"), D3DXVECTOR3(0.0f, 0.0f, 0.0f));
+    assert(bCubeLoadResult);
 
     hResult = D3DXCreateEffectFromFile(g_pd3dDevice,
                                        _T("simple.fx"),
@@ -293,18 +281,9 @@ void InitD3D(HWND hWnd)
 
     assert(hResult == S_OK);
 
-    hResult = D3DXCreateSphere(g_pd3dDevice,
-                               20.f,
-                               32,
-                               32,
-                               &g_pMeshSphere,
-                               NULL);
-
-    assert(hResult == S_OK);
-
     hResult = D3DXCreateTexture(g_pd3dDevice,
-                                640,
-                                480,
+                                kWindowWidth,
+                                kWindowHeight,
                                 1,
                                 D3DUSAGE_RENDERTARGET,
                                 D3DFMT_A8R8G8B8,
@@ -325,18 +304,265 @@ void InitD3D(HWND hWnd)
 
 void Cleanup()
 {
-    for (auto& texture : g_pTextures)
-    {
-        SAFE_RELEASE(texture);
-    }
-
-    SAFE_RELEASE(g_pMesh);
-    SAFE_RELEASE(g_pMeshSphere);
+    ReleaseMeshResources();
     SAFE_RELEASE(g_pEffect1);
     SAFE_RELEASE(g_pEffect2);
     SAFE_RELEASE(g_pFont);
+    SAFE_RELEASE(g_pRenderTarget);
+    SAFE_RELEASE(g_pQuadDecl);
     SAFE_RELEASE(g_pd3dDevice);
     SAFE_RELEASE(g_pD3D);
+}
+
+bool AddMeshFromXFile(const TCHAR* pPath, const D3DXVECTOR3& position)
+{
+    LPD3DXBUFFER pD3DXMtrlBuffer = NULL;
+    LPD3DXMESH pMesh = NULL;
+    DWORD dwNumMaterials = 0;
+    MeshInstance instance;
+
+    HRESULT hResult = D3DXLoadMeshFromX(pPath,
+                                        D3DXMESH_SYSTEMMEM,
+                                        g_pd3dDevice,
+                                        NULL,
+                                        &pD3DXMtrlBuffer,
+                                        NULL,
+                                        &dwNumMaterials,
+                                        &pMesh);
+
+    if (FAILED(hResult))
+    {
+        SAFE_RELEASE(pD3DXMtrlBuffer);
+        SAFE_RELEASE(pMesh);
+        return false;
+    }
+
+    std::vector<D3DMATERIAL9> materials(dwNumMaterials);
+    std::vector<LPDIRECT3DTEXTURE9> textures(dwNumMaterials, NULL);
+
+    D3DXMATERIAL* d3dxMaterials = (D3DXMATERIAL*)pD3DXMtrlBuffer->GetBufferPointer();
+
+    for (DWORD i = 0; i < dwNumMaterials; i++)
+    {
+        materials[i] = d3dxMaterials[i].MatD3D;
+        materials[i].Ambient = materials[i].Diffuse;
+
+        if (d3dxMaterials[i].pTextureFilename == NULL)
+        {
+            continue;
+        }
+
+        std::string pTexPath(d3dxMaterials[i].pTextureFilename);
+
+        if (pTexPath.empty())
+        {
+            continue;
+        }
+
+        std::basic_string<TCHAR> resolvedTexturePath = BuildTexturePath(pPath, pTexPath.c_str());
+
+#ifdef UNICODE
+        hResult = D3DXCreateTextureFromFileW(g_pd3dDevice, resolvedTexturePath.c_str(), &textures[i]);
+#else
+        int len = WideCharToMultiByte(CP_ACP, 0, resolvedTexturePath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        std::string resolvedTexturePathA(len, '\0');
+        WideCharToMultiByte(CP_ACP, 0, resolvedTexturePath.c_str(), -1, &resolvedTexturePathA[0], len, nullptr, nullptr);
+        hResult = D3DXCreateTextureFromFileA(g_pd3dDevice, resolvedTexturePathA.c_str(), &textures[i]);
+#endif
+
+        if (FAILED(hResult))
+        {
+            for (auto& texture : textures)
+            {
+                SAFE_RELEASE(texture);
+            }
+
+            SAFE_RELEASE(pD3DXMtrlBuffer);
+            SAFE_RELEASE(pMesh);
+            return false;
+        }
+    }
+
+    void* pVertices = NULL;
+    hResult = pMesh->LockVertexBuffer(D3DLOCK_READONLY, &pVertices);
+    if (SUCCEEDED(hResult))
+    {
+        D3DXComputeBoundingSphere(static_cast<const D3DXVECTOR3*>(pVertices),
+                                  pMesh->GetNumVertices(),
+                                  D3DXGetFVFVertexSize(pMesh->GetFVF()),
+                                  &instance.center,
+                                  &instance.radius);
+        pMesh->UnlockVertexBuffer();
+    }
+
+    SAFE_RELEASE(pD3DXMtrlBuffer);
+
+    instance.pMesh = pMesh;
+    instance.materials.swap(materials);
+    instance.textures.swap(textures);
+    instance.numMaterials = dwNumMaterials;
+    instance.position = position - instance.center;
+
+    g_meshInstances.push_back(instance);
+
+    return true;
+}
+
+void ReleaseMeshResources()
+{
+    for (auto& meshInstance : g_meshInstances)
+    {
+        for (auto& texture : meshInstance.textures)
+        {
+            SAFE_RELEASE(texture);
+        }
+
+        meshInstance.textures.clear();
+        meshInstance.materials.clear();
+        meshInstance.numMaterials = 0;
+        SAFE_RELEASE(meshInstance.pMesh);
+    }
+
+    g_meshInstances.clear();
+}
+
+void UpdateFrame()
+{
+    LARGE_INTEGER currentCounter = { };
+    QueryPerformanceCounter(&currentCounter);
+
+    float deltaTime = 0.016f;
+    if (g_qpcFrequency.QuadPart > 0)
+    {
+        deltaTime = static_cast<float>(currentCounter.QuadPart - g_prevFrameCounter.QuadPart)
+                  / static_cast<float>(g_qpcFrequency.QuadPart);
+    }
+
+    g_prevFrameCounter = currentCounter;
+
+    if (deltaTime < 0.0f)
+    {
+        deltaTime = 0.0f;
+    }
+
+    if (deltaTime > 0.1f)
+    {
+        deltaTime = 0.1f;
+    }
+
+    UpdateCamera(deltaTime);
+}
+
+void UpdateCamera(float deltaTime)
+{
+    D3DXVECTOR3 forward = GetCameraForward();
+    D3DXVECTOR3 forwardOnPlane(forward.x, 0.0f, forward.z);
+    if (D3DXVec3LengthSq(&forwardOnPlane) > 0.0f)
+    {
+        D3DXVec3Normalize(&forwardOnPlane, &forwardOnPlane);
+    }
+
+    D3DXVECTOR3 worldUp(0.0f, 1.0f, 0.0f);
+    D3DXVECTOR3 right;
+    D3DXVec3Cross(&right, &worldUp, &forwardOnPlane);
+    if (D3DXVec3LengthSq(&right) > 0.0f)
+    {
+        D3DXVec3Normalize(&right, &right);
+    }
+
+    D3DXVECTOR3 move(0.0f, 0.0f, 0.0f);
+
+    if ((GetAsyncKeyState('W') & 0x8000) != 0)
+    {
+        move += forwardOnPlane;
+    }
+
+    if ((GetAsyncKeyState('S') & 0x8000) != 0)
+    {
+        move -= forwardOnPlane;
+    }
+
+    if ((GetAsyncKeyState('D') & 0x8000) != 0)
+    {
+        move += right;
+    }
+
+    if ((GetAsyncKeyState('A') & 0x8000) != 0)
+    {
+        move -= right;
+    }
+
+    if ((GetAsyncKeyState('E') & 0x8000) != 0)
+    {
+        move.y += 1.0f;
+    }
+
+    if ((GetAsyncKeyState('Q') & 0x8000) != 0)
+    {
+        move.y -= 1.0f;
+    }
+
+    if (D3DXVec3LengthSq(&move) > 0.0f)
+    {
+        D3DXVec3Normalize(&move, &move);
+        g_cameraPosition += move * (kCameraMoveSpeed * deltaTime);
+    }
+}
+
+D3DXVECTOR3 GetCameraForward()
+{
+    const float cosPitch = cosf(g_cameraPitch);
+    D3DXVECTOR3 forward(sinf(g_cameraYaw) * cosPitch,
+                        sinf(g_cameraPitch),
+                        cosf(g_cameraYaw) * cosPitch);
+    D3DXVec3Normalize(&forward, &forward);
+    return forward;
+}
+
+D3DXVECTOR3 GetCameraFocusPoint()
+{
+    return g_cameraPosition + GetCameraForward() * kLoadedMeshDistance;
+}
+
+bool OpenMeshFileDialog(HWND hWnd)
+{
+    TCHAR szFile[MAX_PATH] = { };
+    OPENFILENAME ofn = { };
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hWnd;
+    ofn.lpstrFilter = _T("X Files (*.x)\0*.x\0All Files (*.*)\0*.*\0");
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    ofn.lpstrDefExt = _T("x");
+
+    if (!GetOpenFileName(&ofn))
+    {
+        return false;
+    }
+
+    bool bLoaded = AddMeshFromXFile(szFile, GetCameraFocusPoint());
+    g_bMouseInitialized = false;
+    return bLoaded;
+}
+
+std::basic_string<TCHAR> BuildTexturePath(const TCHAR* meshPath, const char* textureFileName)
+{
+#ifdef UNICODE
+    int texturePathLen = MultiByteToWideChar(CP_ACP, 0, textureFileName, -1, nullptr, 0);
+    std::wstring texturePath(texturePathLen, 0);
+    MultiByteToWideChar(CP_ACP, 0, textureFileName, -1, &texturePath[0], texturePathLen);
+#else
+    std::string texturePath(textureFileName);
+#endif
+
+    TCHAR meshDirectory[MAX_PATH] = { };
+    _tcscpy_s(meshDirectory, meshPath);
+    PathRemoveFileSpec(meshDirectory);
+
+    TCHAR combinedPath[MAX_PATH] = { };
+    PathCombine(combinedPath, meshDirectory, texturePath.c_str());
+    return std::basic_string<TCHAR>(combinedPath);
 }
 
 void RenderPass1()
@@ -354,27 +580,20 @@ void RenderPass1()
     hResult = g_pd3dDevice->SetRenderTarget(0, pRenderTarget);
     assert(hResult == S_OK);
 
-    static float f = 0.0f;
-    f += 0.025f;
-
-    D3DXMATRIX mat;
+    D3DXMATRIX matWorldViewProj;
+    D3DXMATRIX matWorld;
     D3DXMATRIX View, Proj;
 
     D3DXMatrixPerspectiveFovLH(&Proj,
                                D3DXToRadian(45),
-                               640.0f / 480.0f,
+                               static_cast<float>(kWindowWidth) / static_cast<float>(kWindowHeight),
                                1.0f,
                                10000.0f);
 
-    D3DXVECTOR3 vec1(10 * sinf(f), 5, -10 * cosf(f));
-    D3DXVECTOR3 vec2(0, 0, 0);
+    D3DXVECTOR3 vec1 = g_cameraPosition;
+    D3DXVECTOR3 vec2 = GetCameraFocusPoint();
     D3DXVECTOR3 vec3(0, 1, 0);
     D3DXMatrixLookAtLH(&View, &vec1, &vec2, &vec3);
-    D3DXMatrixIdentity(&mat);
-    mat = mat * View * Proj;
-
-    hResult = g_pEffect1->SetMatrix("g_matWorldViewProj", &mat);
-    assert(hResult == S_OK);
 
     hResult = g_pd3dDevice->Clear(0,
                                   NULL,
@@ -389,7 +608,7 @@ void RenderPass1()
     assert(hResult == S_OK);
 
     TCHAR msg[100];
-    _tcscpy_s(msg, 100, _T("SSAOに挑戦"));
+    _tcscpy_s(msg, 100, _T("WASD:移動  Q/E:下降/上昇  マウス:回転  F1:Xファイル読込"));
     TextDraw(g_pFont, msg, 0, 0);
 
     hResult = g_pEffect1->SetTechnique("Technique1");
@@ -405,27 +624,27 @@ void RenderPass1()
     hResult = g_pEffect1->SetBool("g_bUseTexture", TRUE);
     assert(hResult == S_OK);
 
-    for (DWORD i = 0; i < g_dwNumMaterials; i++)
+    for (const auto& meshInstance : g_meshInstances)
     {
-        hResult = g_pEffect1->SetTexture("texture1", g_pTextures[i]);
+        D3DXMatrixTranslation(&matWorld, meshInstance.position.x, meshInstance.position.y, meshInstance.position.z);
+        matWorldViewProj = matWorld * View * Proj;
+        hResult = g_pEffect1->SetMatrix("g_matWorldViewProj", &matWorldViewProj);
         assert(hResult == S_OK);
 
-        hResult = g_pEffect1->CommitChanges();
+        hResult = g_pEffect1->SetBool("g_bUseTexture", TRUE);
         assert(hResult == S_OK);
 
-        hResult = g_pMesh->DrawSubset(i);
-        assert(hResult == S_OK);
-    }
+        for (DWORD i = 0; i < meshInstance.numMaterials; i++)
+        {
+            hResult = g_pEffect1->SetTexture("texture1", meshInstance.textures[i]);
+            assert(hResult == S_OK);
 
-    {
-        hResult = g_pEffect1->SetBool("g_bUseTexture", FALSE);
-        assert(hResult == S_OK);
+            hResult = g_pEffect1->CommitChanges();
+            assert(hResult == S_OK);
 
-        hResult = g_pEffect1->CommitChanges();
-        assert(hResult == S_OK);
-
-        hResult = g_pMeshSphere->DrawSubset(0);
-        assert(hResult == S_OK);
+            hResult = meshInstance.pMesh->DrawSubset(i);
+            assert(hResult == S_OK);
+        }
     }
 
     hResult = g_pEffect1->EndPass();
@@ -499,8 +718,8 @@ void DrawFullscreenQuad()
     QuadVertex v[4] { };
 
     // クリップ空間の矩形（TriangleStrip）
-    float du = 0.5f / 640.f;
-    float dv = 0.5f / 480.f;
+    float du = 0.5f / static_cast<float>(kWindowWidth);
+    float dv = 0.5f / static_cast<float>(kWindowHeight);
 
     v[0].x = -1.0f;
     v[0].y = -1.0f;
@@ -544,8 +763,48 @@ LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_bClose = true;
         return 0;
     }
+    case WM_MOUSEMOVE:
+    {
+        POINT currentMousePos;
+        currentMousePos.x = GET_X_LPARAM(lParam);
+        currentMousePos.y = GET_Y_LPARAM(lParam);
+
+        if (!g_bMouseInitialized)
+        {
+            g_prevMousePos = currentMousePos;
+            g_bMouseInitialized = true;
+            return 0;
+        }
+
+        LONG deltaX = currentMousePos.x - g_prevMousePos.x;
+        LONG deltaY = currentMousePos.y - g_prevMousePos.y;
+        g_prevMousePos = currentMousePos;
+
+        g_cameraYaw += static_cast<float>(deltaX) * kCameraRotationSpeed;
+        g_cameraPitch -= static_cast<float>(deltaY) * kCameraRotationSpeed;
+
+        const float pitchLimit = D3DXToRadian(89.0f);
+        if (g_cameraPitch > pitchLimit)
+        {
+            g_cameraPitch = pitchLimit;
+        }
+        else if (g_cameraPitch < -pitchLimit)
+        {
+            g_cameraPitch = -pitchLimit;
+        }
+
+        return 0;
+    }
+    case WM_KEYDOWN:
+    {
+        if (wParam == VK_F1 && (lParam & 0x40000000) == 0)
+        {
+            OpenMeshFileDialog(hWnd);
+            return 0;
+        }
+        break;
+    }
     }
 
     return DefWindowProc(hWnd, msg, wParam, lParam);
 }
-
