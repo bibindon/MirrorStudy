@@ -12,6 +12,7 @@ sampler textureSampler = sampler_state {
     MagFilter = POINT;
 };
 
+// フルスクリーンクアッドの座標とUVをそのままピクセルシェーダーへ渡す。
 void VertexShader1(in  float4 inPosition  : POSITION,
                    in  float2 inTexCood   : TEXCOORD0,
 
@@ -22,6 +23,7 @@ void VertexShader1(in  float4 inPosition  : POSITION,
     outTexCood = inTexCood;
 }
 
+// RenderPass1の結果を読み取り、最終的な画面色として出力する。
 void PixelShader1(in float4 inPosition    : POSITION,
                   in float2 inTexCood     : TEXCOORD0,
 
@@ -32,9 +34,9 @@ void PixelShader1(in float4 inPosition    : POSITION,
 
     float average = (workColor.r + workColor.g + workColor.b) / 3;
 
-    // 試しに彩度を上げたり下げたりしてみる
     if (false)
     {
+        // 色調整を試すための分岐。現在は無効化している。
         if (true)
         {
             workColor.r += (workColor.r - average);

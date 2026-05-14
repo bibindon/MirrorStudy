@@ -16,6 +16,7 @@ sampler textureSampler = sampler_state {
     MagFilter = LINEAR;
 };
 
+// メッシュ頂点を変換し、鏡面サンプリング用の射影座標も出力する。
 void VertexShader1(in  float4 inPosition  : POSITION,
                    in  float4 inNormal    : NORMAL0,
                    in  float4 inTexCood   : TEXCOORD0,
@@ -25,7 +26,6 @@ void VertexShader1(in  float4 inPosition  : POSITION,
                    out float4 outTexCood  : TEXCOORD0,
                    out float4 outMirrorProj : TEXCOORD1)
 {
-    // é¡é¢ã ã‘ã¯ãƒ¯ãƒ¼ãƒ«ãƒ‰åº§æ¨™ã‚’é¡ã‚«ãƒ¡ãƒ©ã¸å°„å½±ã—ã€ãã®çµæžœã‹ã‚‰åå°„RTã®UVã‚’ä½œã‚‹ã€‚
     float4 worldPos = mul(inPosition, g_matWorld);
     outPosition = mul(inPosition, g_matWorldViewProj);
     outMirrorProj = mul(worldPos, g_matMirrorViewProj);
@@ -44,6 +44,7 @@ void VertexShader1(in  float4 inPosition  : POSITION,
     outTexCood = inTexCood;
 }
 
+// 通常メッシュは通常テクスチャで、鏡面メッシュは反射用レンダーターゲットで色を決める。
 void PixelShader1(in float4 inScreenColor : COLOR0,
                   in float2 inTexCood     : TEXCOORD0,
                   in float4 inMirrorProj  : TEXCOORD1,
@@ -52,9 +53,9 @@ void PixelShader1(in float4 inScreenColor : COLOR0,
 {
     float4 workColor = (float4)0;
 
-    // Ã©ÂÂ¡Ã©ÂÂ¢Ã£ÂÂ Ã£Ââ€˜Ã£ÂÂ¯Ã©ÂÂ¡Ã£â€šÂ«Ã£Æ’Â¡Ã£Æ’Â©Ã£ÂÂ®Ã¥Â°â€žÃ¥Â½Â±Ã¥ÂºÂ§Ã¦Â¨â„¢Ã£Ââ€¹Ã£â€šâ€°UVÃ£â€šâ€™Ã¤Â½Å“Ã£ÂÂ£Ã£ÂÂ¦Ã¥ÂÂÃ¥Â°â€žRTÃ£â€šâ€™Ã¨ÂªÂ­Ã£â€šâ‚¬Ã£â‚¬â€š
     if (g_bMirrorSurface)
     {
+        // 鏡カメラの射影座標をUVへ変換する。
         float2 uv;
         uv.x = inMirrorProj.x / inMirrorProj.w * 0.5f + 0.5f;
         uv.y = -inMirrorProj.y / inMirrorProj.w * 0.5f + 0.5f;

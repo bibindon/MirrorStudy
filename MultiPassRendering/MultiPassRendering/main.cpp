@@ -23,10 +23,13 @@
 
 namespace
 {
+    // ウィンドウサイズと描画用RTのサイズは固定で揃えている。
     const int kWindowWidth = 1600;
     const int kWindowHeight = 900;
+    // カメラ移動は毎フレームdeltaTimeで積分する。
     const float kCameraMoveSpeed = 12.0f;
     const float kCameraRotationSpeed = 0.005f;
+    // F1で追加したモデルは、現在の視線前方2m地点へ置く。
     const float kLoadedMeshDistance = 2.0f;
 }
 
@@ -38,7 +41,9 @@ LPD3DXEFFECT g_pEffect2 = NULL;
 
 bool g_bClose = false;
 
+// RenderPass1の結果を保持する通常シーン用RT。
 LPDIRECT3DTEXTURE9 g_pRenderTarget = NULL;
+// 鏡カメラから見た反射シーンを保持するRT。
 LPDIRECT3DTEXTURE9 g_pMirrorRenderTarget = NULL;
 // 鏡面の射影テクスチャ生成に使う鏡カメラのViewProjection。
 D3DXMATRIX g_matMirrorViewProj;
@@ -50,18 +55,22 @@ LARGE_INTEGER g_prevFrameCounter = { };
 // カーソル非表示時は毎フレームこの中心へ戻し、差分だけを視点回転へ使う。
 bool g_bCursorLocked = true;
 
+// カメラは位置とYaw/Pitchだけを保持し、毎フレームforwardを再構成する。
 D3DXVECTOR3 g_cameraPosition(0.0f, 5.0f, -15.0f);
 float g_cameraYaw = 0.0f;
 float g_cameraPitch = 0.0f;
 
 struct MeshInstance
 {
+    // メッシュ本体とsubset単位のマテリアル/テクスチャ参照。
     LPD3DXMESH pMesh = NULL;
     std::vector<D3DMATERIAL9> materials;
     std::vector<LPDIRECT3DTEXTURE9> textures;
     DWORD numMaterials = 0;
+    // 読み込み時に計算したローカル空間の包囲球。追加配置やデバッグの基準に使う。
     D3DXVECTOR3 center = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
     float radius = 1.0f;
+    // ワールド配置は回転なしの平行移動だけで持っている。
     D3DXVECTOR3 position = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
     // 鏡面だけはメッシュ形状から取り出した平面情報を反射カメラ生成へ使う。
     D3DXVECTOR3 mirrorPlanePoint = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
@@ -82,13 +91,13 @@ std::vector<TextureCacheEntry> g_textureCache;
 
 struct QuadVertex
 {
-    // クリップ空間用（-1..1, w=1）
+    // フルスクリーンクアッドはスクリーン空間ではなくクリップ空間で直接出す。
     float x;
     float y;
     float z;
     float w;
 
-    // テクスチャ座標（今回は未使用でも可）
+    // PostEffect側が参照する転送元RTのUV。
     float u;
     float v;
 };
@@ -133,6 +142,7 @@ extern int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
                             _In_ LPTSTR lpCmdLine,
                             _In_ int nCmdShow);
 
+// アプリケーションのウィンドウを作成し、メインループを実行する。
 int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPTSTR lpCmdLine,
@@ -157,6 +167,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
     ATOM atom = RegisterClassEx(&wc);
     assert(atom != 0);
 
+    // クライアント領域が固定サイズになるように、ウィンドウ枠込みサイズへ補正する。
     RECT rect;
     SetRect(&rect, 0, 0, kWindowWidth, kWindowHeight);
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
@@ -196,7 +207,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
         }
         else
         {
-            // Sleep(16);
+            // メッセージが無い間だけ、入力更新と描画を回し続ける。
             UpdateFrame();
             RenderPass1();
             RenderPass2();
@@ -214,6 +225,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
     return 0;
 }
 
+// 指定位置へデバッグ用テキストを描画する。
 void TextDraw(LPD3DXFONT pFont, TCHAR* text, int X, int Y)
 {
     RECT rect = { X, Y, 0, 0 };
@@ -230,10 +242,12 @@ void TextDraw(LPD3DXFONT pFont, TCHAR* text, int X, int Y)
     assert((int)hResult >= 0);
 }
 
+// Direct3D デバイス、エフェクト、レンダーターゲットを初期化する。
 void InitD3D(HWND hWnd)
 {
     HRESULT hResult = E_FAIL;
 
+    // Device生成失敗時はsoftware vertex processingへフォールバックする。
     g_pD3D = Direct3DCreate9(D3D_SDK_VERSION);
     assert(g_pD3D != NULL);
 
@@ -288,6 +302,7 @@ void InitD3D(HWND hWnd)
 
     assert(hResult == S_OK);
 
+    // シーンの基準床。反射RTにも映る対象として扱う。
     bool bPlateLoadResult = AddMeshFromXFile(_T("res\\plate.x"),
                                              D3DXVECTOR3(0.0f, 0.0f, 0.0f),
                                              false,
@@ -295,6 +310,7 @@ void InitD3D(HWND hWnd)
                                              true);
     assert(bPlateLoadResult);
 
+    // 鏡面メッシュ。反射RTの参照先でもあり、反射平面の定義元でもある。
     bool bMirrorLoadResult = AddMeshFromXFile(_T("res\\plate.mirror.x"),
                                               D3DXVECTOR3(0.0f, 10.1f, 0.0f),
                                               false,
@@ -302,6 +318,7 @@ void InitD3D(HWND hWnd)
                                               false);
     assert(bMirrorLoadResult);
 
+    // シーン内で反射対象になる立方体。
     bool bCubeLoadResult = AddMeshFromXFile(_T("res\\cubeNormalInverse.x"),
                                             D3DXVECTOR3(0.0f, 0.0f, 0.0f),
                                             false);
@@ -329,6 +346,7 @@ void InitD3D(HWND hWnd)
 
     assert(hResult == S_OK);
 
+    // 通常シーンと鏡反射を別RTへ分離してから最後に合成する。
     hResult = D3DXCreateTexture(g_pd3dDevice,
                                 kWindowWidth,
                                 kWindowHeight,
@@ -349,6 +367,7 @@ void InitD3D(HWND hWnd)
                                 &g_pMirrorRenderTarget);
     assert(hResult == S_OK);
 
+    // 最終転送パスはPosition/Texcoordだけ持つ単純な宣言を使う。
     D3DVERTEXELEMENT9 elems[] =
     {
         { 0,  0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
@@ -360,6 +379,7 @@ void InitD3D(HWND hWnd)
     assert(hr == S_OK);
 }
 
+// 確保した Direct3D リソースと入力状態を解放する。
 void Cleanup()
 {
     SetCursorLocked(false);
@@ -375,6 +395,7 @@ void Cleanup()
     SAFE_RELEASE(g_pD3D);
 }
 
+// X ファイルを読み込み、メッシュインスタンスとしてシーンへ追加する。
 bool AddMeshFromXFile(const TCHAR* pPath,
                      const D3DXVECTOR3& position,
                      bool centerAtPosition,
@@ -386,6 +407,7 @@ bool AddMeshFromXFile(const TCHAR* pPath,
     DWORD dwNumMaterials = 0;
     MeshInstance instance;
 
+    // Xファイルはsystem memoryで読み込み、必要情報を自前の構造へ移している。
     HRESULT hResult = D3DXLoadMeshFromX(pPath,
                                         D3DXMESH_SYSTEMMEM,
                                         g_pd3dDevice,
@@ -425,6 +447,7 @@ bool AddMeshFromXFile(const TCHAR* pPath,
             continue;
         }
 
+        // TextureFilenameはXファイル基準の相対パスなので絶対パスへ直してから共有検索する。
         std::basic_string<TCHAR> resolvedTexturePath = BuildTexturePath(pPath, pTexPath.c_str());
         hResult = GetOrCreateTexture(resolvedTexturePath, &textures[i]);
 
@@ -441,6 +464,7 @@ bool AddMeshFromXFile(const TCHAR* pPath,
         }
     }
 
+    // 追加配置やデバッグ出力で使うため、ローカル空間の包囲球を先に求める。
     void* pVertices = NULL;
     hResult = pMesh->LockVertexBuffer(D3DLOCK_READONLY, &pVertices);
     if (SUCCEEDED(hResult))
@@ -459,6 +483,7 @@ bool AddMeshFromXFile(const TCHAR* pPath,
     instance.materials.swap(materials);
     instance.textures.swap(textures);
     instance.numMaterials = dwNumMaterials;
+    // centerAtPosition=true の場合だけ、包囲球中心が指定位置へ来るよう補正する。
     instance.position = centerAtPosition ? (position - instance.center) : position;
     instance.isMirrorSurface = isMirrorSurface;
     instance.isGroundSurface = isGroundSurface;
@@ -489,6 +514,7 @@ bool AddMeshFromXFile(const TCHAR* pPath,
     return true;
 }
 
+// シーンに登録されたメッシュと、その参照テクスチャを解放する。
 void ReleaseMeshResources()
 {
     for (auto& meshInstance : g_meshInstances)
@@ -507,6 +533,7 @@ void ReleaseMeshResources()
     g_meshInstances.clear();
 }
 
+// 指定パスのテクスチャをキャッシュから取得し、なければ新規読み込みする。
 HRESULT GetOrCreateTexture(const std::basic_string<TCHAR>& texturePath, LPDIRECT3DTEXTURE9* ppTexture)
 {
     if (ppTexture == NULL)
@@ -516,6 +543,7 @@ HRESULT GetOrCreateTexture(const std::basic_string<TCHAR>& texturePath, LPDIRECT
 
     *ppTexture = NULL;
 
+    // 同一ファイルパスなら既存テクスチャを再利用し、COM参照だけ増やす。
     for (const auto& cacheEntry : g_textureCache)
     {
         if (cacheEntry.path == texturePath && cacheEntry.pTexture != NULL)
@@ -526,6 +554,7 @@ HRESULT GetOrCreateTexture(const std::basic_string<TCHAR>& texturePath, LPDIRECT
         }
     }
 
+    // 未登録のパスだけを新規ロードしてキャッシュへ載せる。
     LPDIRECT3DTEXTURE9 pTexture = NULL;
     HRESULT hResult = E_FAIL;
 
@@ -554,6 +583,7 @@ HRESULT GetOrCreateTexture(const std::basic_string<TCHAR>& texturePath, LPDIRECT
     return S_OK;
 }
 
+// 共有テクスチャキャッシュが保持している参照を解放する。
 void ReleaseTextureCache()
 {
     // キャッシュ自身が1参照を持ち、各メッシュが別途AddRefした参照を持つ。
@@ -565,6 +595,7 @@ void ReleaseTextureCache()
     g_textureCache.clear();
 }
 
+// メッシュの先頭三角形から鏡面として使う平面の点と法線を求める。
 bool ComputeMirrorPlaneFromMesh(LPD3DXMESH pMesh, D3DXVECTOR3* pPlanePoint, D3DXVECTOR3* pPlaneNormal)
 {
     if (pMesh == NULL || pPlanePoint == NULL || pPlaneNormal == NULL)
@@ -601,6 +632,7 @@ bool ComputeMirrorPlaneFromMesh(LPD3DXMESH pMesh, D3DXVECTOR3* pPlanePoint, D3DX
         return false;
     }
 
+    // 先頭faceの3頂点から平面法線を作り、鏡の表向きを決めている。
     const UINT vertexStride = pMesh->GetNumBytesPerVertex();
     const BYTE* pVertexBytes = static_cast<const BYTE*>(pVertices);
     DWORD i0 = 0;
@@ -658,6 +690,7 @@ bool ComputeMirrorPlaneFromMesh(LPD3DXMESH pMesh, D3DXVECTOR3* pPlanePoint, D3DX
     return isValidNormal;
 }
 
+// 1フレーム分の経過時間を計算し、入力に応じてカメラを更新する。
 void UpdateFrame()
 {
     LARGE_INTEGER currentCounter = { };
@@ -677,6 +710,7 @@ void UpdateFrame()
         deltaTime = 0.0f;
     }
 
+    // ブレークポイント復帰直後などの過大な時間差は移動暴走を防ぐため丸める。
     if (deltaTime > 0.1f)
     {
         deltaTime = 0.1f;
@@ -686,6 +720,7 @@ void UpdateFrame()
     UpdateCamera(deltaTime);
 }
 
+// マウスカーソルの移動量からカメラの向きを更新する。
 void UpdateMouseLook()
 {
     if (!g_bCursorLocked || g_hWnd == NULL)
@@ -722,9 +757,11 @@ void UpdateMouseLook()
     assert(bCursorMoved != FALSE);
 }
 
+// キーボード入力に応じてカメラ位置を移動する。
 void UpdateCamera(float deltaTime)
 {
     D3DXVECTOR3 forward = GetCameraForward();
+    // 移動方向は水平移動と垂直移動を分けて、Pitchの影響を前後移動へ入れない。
     D3DXVECTOR3 forwardOnPlane(forward.x, 0.0f, forward.z);
     if (D3DXVec3LengthSq(&forwardOnPlane) > 0.0f)
     {
@@ -739,6 +776,7 @@ void UpdateCamera(float deltaTime)
         D3DXVec3Normalize(&right, &right);
     }
 
+    // キー状態から移動ベクトルを合成し、最後に正規化して斜め移動速度を揃える。
     D3DXVECTOR3 move(0.0f, 0.0f, 0.0f);
 
     if ((GetAsyncKeyState('W') & 0x8000) != 0)
@@ -778,8 +816,10 @@ void UpdateCamera(float deltaTime)
     }
 }
 
+// 現在の Yaw/Pitch からカメラの前方向ベクトルを作る。
 D3DXVECTOR3 GetCameraForward()
 {
+    // Yaw/Pitchから都度forwardを再構成し、View行列の注視点へ使う。
     const float cosPitch = cosf(g_cameraPitch);
     D3DXVECTOR3 forward(sinf(g_cameraYaw) * cosPitch,
                         sinf(g_cameraPitch),
@@ -788,11 +828,14 @@ D3DXVECTOR3 GetCameraForward()
     return forward;
 }
 
+// 現在のカメラが注視している前方位置を返す。
 D3DXVECTOR3 GetCameraFocusPoint()
 {
+    // 注視点は常に視線前方一定距離に置き、F1追加配置にも流用する。
     return g_cameraPosition + GetCameraForward() * kLoadedMeshDistance;
 }
 
+// ファイル選択ダイアログから X ファイルを選び、シーンへ追加する。
 bool OpenMeshFileDialog(HWND hWnd)
 {
     TCHAR szFile[MAX_PATH] = { };
@@ -810,6 +853,7 @@ bool OpenMeshFileDialog(HWND hWnd)
         return false;
     }
 
+    // 追加読込モデルは包囲球中心が現在の注視点へ来るように置く。
     bool bLoaded = AddMeshFromXFile(szFile, GetCameraFocusPoint(), true);
     if (g_bCursorLocked)
     {
@@ -820,6 +864,7 @@ bool OpenMeshFileDialog(HWND hWnd)
     return bLoaded;
 }
 
+// メッシュファイルの場所を基準に、テクスチャファイルの絶対パスを組み立てる。
 std::basic_string<TCHAR> BuildTexturePath(const TCHAR* meshPath, const char* textureFileName)
 {
 #ifdef UNICODE
@@ -830,6 +875,7 @@ std::basic_string<TCHAR> BuildTexturePath(const TCHAR* meshPath, const char* tex
     std::string texturePath(textureFileName);
 #endif
 
+    // Xファイルの親ディレクトリとTextureFilenameを結合して参照先を解決する。
     TCHAR meshDirectory[MAX_PATH] = { };
     _tcscpy_s(meshDirectory, meshPath);
     PathRemoveFileSpec(meshDirectory);
@@ -839,6 +885,7 @@ std::basic_string<TCHAR> BuildTexturePath(const TCHAR* meshPath, const char* tex
     return std::basic_string<TCHAR>(combinedPath);
 }
 
+// シーンに登録された鏡面メッシュを取得する。
 MeshInstance* GetMirrorMeshInstance()
 {
     for (auto& meshInstance : g_meshInstances)
@@ -852,6 +899,7 @@ MeshInstance* GetMirrorMeshInstance()
     return NULL;
 }
 
+// クライアント領域の中心座標をスクリーン座標で返す。
 POINT GetClientCenterScreenPoint(HWND hWnd)
 {
     RECT clientRect = { };
@@ -867,6 +915,7 @@ POINT GetClientCenterScreenPoint(HWND hWnd)
     return centerScreenPos;
 }
 
+// カーソルロック状態を切り替え、ロック時はカーソルを画面中央へ戻す。
 void SetCursorLocked(bool isLocked)
 {
     g_bCursorLocked = isLocked;
@@ -878,6 +927,7 @@ void SetCursorLocked(bool isLocked)
 
     if (isLocked)
     {
+        // ShowCursorは内部カウンタなので、目的状態になるまで呼び切る。
         while (ShowCursor(FALSE) >= 0)
         {
         }
@@ -894,6 +944,7 @@ void SetCursorLocked(bool isLocked)
     }
 }
 
+// 指定されたカメラ行列でシーン内のメッシュを現在のレンダーターゲットへ描画する。
 void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
                                 const D3DXMATRIX& proj,
                                 bool skipMirrorSurface,
@@ -926,6 +977,7 @@ void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
             continue;
         }
 
+        // 各メッシュは平行移動だけなのでWorldはtranslationのみで構成する。
         D3DXMatrixTranslation(&matWorld, meshInstance.position.x, meshInstance.position.y, meshInstance.position.z);
         matWorldViewProj = matWorld * view * proj;
 
@@ -951,6 +1003,7 @@ void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
         hResult = g_pEffect1->SetBool("g_bUseTexture", TRUE);
         assert(hResult == S_OK);
 
+        // subset単位にtexture1だけ差し替え、Effectの同一Technique内で順に描く。
         for (DWORD i = 0; i < meshInstance.numMaterials; i++)
         {
             LPDIRECT3DTEXTURE9 pTexture = useMirrorTexture ? g_pMirrorRenderTarget : meshInstance.textures[i];
@@ -972,6 +1025,7 @@ void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
     assert(hResult == S_OK);
 }
 
+// 鏡面用レンダーターゲットへ、鏡カメラから見た反射シーンを描画する。
 void RenderMirrorTexture()
 {
     MeshInstance* pMirrorMesh = GetMirrorMeshInstance();
@@ -982,6 +1036,7 @@ void RenderMirrorTexture()
 
     HRESULT hResult = E_FAIL;
 
+    // 反射RTへ切り替えたあとで元のサーフェスへ戻すため、現状態を退避しておく。
     LPDIRECT3DSURFACE9 pOldRenderTarget = NULL;
     hResult = g_pd3dDevice->GetRenderTarget(0, &pOldRenderTarget);
     assert(hResult == S_OK);
@@ -1007,6 +1062,7 @@ void RenderMirrorTexture()
                           -D3DXVec3Dot(&planeNormal, &planePoint));
     D3DXMatrixReflect(&matReflection, &mirrorPlane);
 
+    // 通常カメラのeye/target/upを鏡平面で反転し、鏡カメラのLookAtを組む。
     D3DXVECTOR3 eye = g_cameraPosition;
     D3DXVECTOR3 target = GetCameraFocusPoint();
     D3DXVECTOR3 up(0.0f, 1.0f, 0.0f);
@@ -1059,6 +1115,7 @@ void RenderMirrorTexture()
     SAFE_RELEASE(pOldRenderTarget);
 }
 
+// 通常カメラのシーンを中間レンダーターゲットへ描画する。
 void RenderPass1()
 {
     HRESULT hResult = E_FAIL;
@@ -1077,8 +1134,7 @@ void RenderPass1()
     hResult = g_pd3dDevice->SetRenderTarget(0, pRenderTarget);
     assert(hResult == S_OK);
 
-    D3DXMATRIX matWorldViewProj;
-    D3DXMATRIX matWorld;
+    // 通常パス側はView/Projだけ組み立てれば、実メッシュ描画は共通関数へ渡せる。
     D3DXMATRIX View, Proj;
 
     D3DXMatrixPerspectiveFovLH(&Proj,
@@ -1117,6 +1173,7 @@ void RenderPass1()
     assert(hResult == S_OK);
 }
 
+// 中間レンダーターゲットの内容をバックバッファへ転送して表示する。
 void RenderPass2()
 {
     HRESULT hResult = E_FAIL;
@@ -1170,6 +1227,7 @@ void RenderPass2()
     assert(hResult == S_OK);
 }
 
+// 中間レンダーターゲットを画面全体へ転送するクアッドを描画する。
 void DrawFullscreenQuad()
 {
     QuadVertex v[4] { };
@@ -1210,6 +1268,7 @@ void DrawFullscreenQuad()
     g_pd3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(QuadVertex));
 }
 
+// ウィンドウメッセージを処理し、終了やキー入力をアプリ状態へ反映する。
 LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
