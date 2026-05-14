@@ -65,7 +65,14 @@ struct MeshInstance
     bool isGroundSurface = false;
 };
 
+struct TextureCacheEntry
+{
+    std::basic_string<TCHAR> path;
+    LPDIRECT3DTEXTURE9 pTexture = NULL;
+};
+
 std::vector<MeshInstance> g_meshInstances;
+std::vector<TextureCacheEntry> g_textureCache;
 
 struct QuadVertex
 {
@@ -99,6 +106,8 @@ static D3DXVECTOR3 GetCameraForward();
 static D3DXVECTOR3 GetCameraFocusPoint();
 static bool OpenMeshFileDialog(HWND hWnd);
 static std::basic_string<TCHAR> BuildTexturePath(const TCHAR* meshPath, const char* textureFileName);
+static HRESULT GetOrCreateTexture(const std::basic_string<TCHAR>& texturePath, LPDIRECT3DTEXTURE9* ppTexture);
+static void ReleaseTextureCache();
 static void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
                                        const D3DXMATRIX& proj,
                                        bool skipMirrorSurface,
@@ -342,6 +351,7 @@ void InitD3D(HWND hWnd)
 void Cleanup()
 {
     ReleaseMeshResources();
+    ReleaseTextureCache();
     SAFE_RELEASE(g_pEffect1);
     SAFE_RELEASE(g_pEffect2);
     SAFE_RELEASE(g_pFont);
@@ -402,15 +412,7 @@ bool AddMeshFromXFile(const TCHAR* pPath,
         }
 
         std::basic_string<TCHAR> resolvedTexturePath = BuildTexturePath(pPath, pTexPath.c_str());
-
-#ifdef UNICODE
-        hResult = D3DXCreateTextureFromFileW(g_pd3dDevice, resolvedTexturePath.c_str(), &textures[i]);
-#else
-        int len = WideCharToMultiByte(CP_ACP, 0, resolvedTexturePath.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        std::string resolvedTexturePathA(len, '\0');
-        WideCharToMultiByte(CP_ACP, 0, resolvedTexturePath.c_str(), -1, &resolvedTexturePathA[0], len, nullptr, nullptr);
-        hResult = D3DXCreateTextureFromFileA(g_pd3dDevice, resolvedTexturePathA.c_str(), &textures[i]);
-#endif
+        hResult = GetOrCreateTexture(resolvedTexturePath, &textures[i]);
 
         if (FAILED(hResult))
         {
@@ -468,6 +470,63 @@ void ReleaseMeshResources()
     }
 
     g_meshInstances.clear();
+}
+
+HRESULT GetOrCreateTexture(const std::basic_string<TCHAR>& texturePath, LPDIRECT3DTEXTURE9* ppTexture)
+{
+    if (ppTexture == NULL)
+    {
+        return E_POINTER;
+    }
+
+    *ppTexture = NULL;
+
+    for (const auto& cacheEntry : g_textureCache)
+    {
+        if (cacheEntry.path == texturePath && cacheEntry.pTexture != NULL)
+        {
+            cacheEntry.pTexture->AddRef();
+            *ppTexture = cacheEntry.pTexture;
+            return S_OK;
+        }
+    }
+
+    LPDIRECT3DTEXTURE9 pTexture = NULL;
+    HRESULT hResult = E_FAIL;
+
+#ifdef UNICODE
+    hResult = D3DXCreateTextureFromFileW(g_pd3dDevice, texturePath.c_str(), &pTexture);
+#else
+    int len = WideCharToMultiByte(CP_ACP, 0, texturePath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string texturePathA(len, '\0');
+    WideCharToMultiByte(CP_ACP, 0, texturePath.c_str(), -1, &texturePathA[0], len, nullptr, nullptr);
+    hResult = D3DXCreateTextureFromFileA(g_pd3dDevice, texturePathA.c_str(), &pTexture);
+#endif
+
+    if (FAILED(hResult))
+    {
+        SAFE_RELEASE(pTexture);
+        return hResult;
+    }
+
+    TextureCacheEntry cacheEntry;
+    cacheEntry.path = texturePath;
+    cacheEntry.pTexture = pTexture;
+    g_textureCache.push_back(cacheEntry);
+
+    pTexture->AddRef();
+    *ppTexture = pTexture;
+    return S_OK;
+}
+
+void ReleaseTextureCache()
+{
+    for (auto& cacheEntry : g_textureCache)
+    {
+        SAFE_RELEASE(cacheEntry.pTexture);
+    }
+
+    g_textureCache.clear();
 }
 
 void UpdateFrame()
