@@ -40,6 +40,8 @@ bool g_bClose = false;
 
 LPDIRECT3DTEXTURE9 g_pRenderTarget = NULL;
 LPDIRECT3DTEXTURE9 g_pMirrorRenderTarget = NULL;
+// 鏡面の射影テクスチャ生成に使う鏡カメラのViewProjection。
+D3DXMATRIX g_matMirrorViewProj;
 
 LPDIRECT3DVERTEXDECLARATION9 g_pQuadDecl = NULL;
 HWND g_hWnd = NULL;
@@ -176,6 +178,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
     UpdateWindow(hWnd);
     QueryPerformanceFrequency(&g_qpcFrequency);
     QueryPerformanceCounter(&g_prevFrameCounter);
+    D3DXMatrixIdentity(&g_matMirrorViewProj);
 
     MSG msg;
 
@@ -286,7 +289,7 @@ void InitD3D(HWND hWnd)
                                              true);
     assert(bPlateLoadResult);
 
-    bool bMirrorLoadResult = AddMeshFromXFile(_T("res\\plate.mirror.wall.x"),
+    bool bMirrorLoadResult = AddMeshFromXFile(_T("res\\plate.mirror.x"),
                                               D3DXVECTOR3(0.0f, 0.1f, 0.0f),
                                               false,
                                               true,
@@ -459,6 +462,18 @@ bool AddMeshFromXFile(const TCHAR* pPath,
                                                          &instance.mirrorPlaneNormal);
         assert(bPlaneComputed);
         instance.mirrorPlanePoint += instance.position;
+
+        // 実際に反射計算へ使うワールド空間の鏡平面情報を出力する。
+        TCHAR debugText[256];
+        _stprintf_s(debugText,
+                    _T("Mirror plane world point=(%.3f, %.3f, %.3f) normal=(%.3f, %.3f, %.3f)\r\n"),
+                    instance.mirrorPlanePoint.x,
+                    instance.mirrorPlanePoint.y,
+                    instance.mirrorPlanePoint.z,
+                    instance.mirrorPlaneNormal.x,
+                    instance.mirrorPlaneNormal.y,
+                    instance.mirrorPlaneNormal.z);
+        OutputDebugString(debugText);
     }
 
     g_meshInstances.push_back(instance);
@@ -613,6 +628,18 @@ bool ComputeMirrorPlaneFromMesh(LPD3DXMESH pMesh, D3DXVECTOR3* pPlanePoint, D3DX
         D3DXVec3Normalize(&normal, &normal);
         *pPlanePoint = v0;
         *pPlaneNormal = normal;
+
+        // 鏡平面の向きをデバッグしやすいように出力する。
+        TCHAR debugText[256];
+        _stprintf_s(debugText,
+                    _T("Mirror plane local point=(%.3f, %.3f, %.3f) normal=(%.3f, %.3f, %.3f)\r\n"),
+                    pPlanePoint->x,
+                    pPlanePoint->y,
+                    pPlanePoint->z,
+                    pPlaneNormal->x,
+                    pPlaneNormal->y,
+                    pPlaneNormal->z);
+        OutputDebugString(debugText);
     }
 
     pIndexBuffer->Unlock();
@@ -808,11 +835,22 @@ void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
         D3DXMatrixTranslation(&matWorld, meshInstance.position.x, meshInstance.position.y, meshInstance.position.z);
         matWorldViewProj = matWorld * view * proj;
 
+        // 鏡面だけはワールド座標から鏡カメラ射影UVを作るため、World行列も渡す。
+        hResult = g_pEffect1->SetMatrix("g_matWorld", &matWorld);
+        assert(hResult == S_OK);
+
         hResult = g_pEffect1->SetMatrix("g_matWorldViewProj", &matWorldViewProj);
         assert(hResult == S_OK);
 
         const bool useMirrorTexture = useMirrorTextureForMirrorSurface && meshInstance.isMirrorSurface && g_pMirrorRenderTarget != NULL;
         hResult = g_pEffect1->SetBool("g_bUseLighting", !useMirrorTexture);
+        assert(hResult == S_OK);
+
+        // 鏡面だけ射影テクスチャ用の分岐を有効にする。
+        hResult = g_pEffect1->SetBool("g_bMirrorSurface", useMirrorTexture);
+        assert(hResult == S_OK);
+
+        hResult = g_pEffect1->SetMatrix("g_matMirrorViewProj", &g_matMirrorViewProj);
         assert(hResult == S_OK);
 
         hResult = g_pEffect1->SetBool("g_bUseTexture", TRUE);
@@ -894,6 +932,9 @@ void RenderMirrorTexture()
                                1.0f,
                                10000.0f);
 
+    // 後段の鏡面サンプリングで使うため、鏡カメラのViewProjectionを保持する。
+    g_matMirrorViewProj = view * proj;
+
     hResult = g_pd3dDevice->Clear(0,
                                   NULL,
                                   D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
@@ -905,7 +946,8 @@ void RenderMirrorTexture()
     hResult = g_pd3dDevice->BeginScene();
     assert(hResult == S_OK);
 
-    RenderSceneToCurrentTarget(view, proj, true, true, false);
+    // 鏡面自身だけスキップし、地面は反射に含める。
+    RenderSceneToCurrentTarget(view, proj, true, false, false);
 
     hResult = g_pd3dDevice->EndScene();
     assert(hResult == S_OK);

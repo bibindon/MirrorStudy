@@ -1,9 +1,12 @@
 float4x4 g_matWorldViewProj;
+float4x4 g_matWorld;
+float4x4 g_matMirrorViewProj;
 float4 g_lightNormal = { 0.3f, 1.0f, 0.5f, 0.0f };
 float3 g_ambient = { 0.3f, 0.3f, 0.3f };
 
 bool g_bUseTexture = true;
 bool g_bUseLighting = true;
+bool g_bMirrorSurface = false;
 
 texture texture1;
 sampler textureSampler = sampler_state {
@@ -19,9 +22,12 @@ void VertexShader1(in  float4 inPosition  : POSITION,
 
                    out float4 outPosition : POSITION,
                    out float4 outDiffuse  : COLOR0,
-                   out float4 outTexCood  : TEXCOORD0)
+                   out float4 outTexCood  : TEXCOORD0,
+                   out float4 outMirrorProj : TEXCOORD1)
 {
+    float4 worldPos = mul(inPosition, g_matWorld);
     outPosition = mul(inPosition, g_matWorldViewProj);
+    outMirrorProj = mul(worldPos, g_matMirrorViewProj);
 
     if (g_bUseLighting)
     {
@@ -39,11 +45,24 @@ void VertexShader1(in  float4 inPosition  : POSITION,
 
 void PixelShader1(in float4 inScreenColor : COLOR0,
                   in float2 inTexCood     : TEXCOORD0,
+                  in float4 inMirrorProj  : TEXCOORD1,
 
                   out float4 outColor     : COLOR)
 {
     float4 workColor = (float4)0;
-    workColor = tex2D(textureSampler, inTexCood);
+
+    // é¡é¢ã ã‘ã¯é¡ã‚«ãƒ¡ãƒ©ã®å°„å½±åº§æ¨™ã‹ã‚‰UVã‚’ä½œã£ã¦åå°„RTã‚’èª­ã‚€ã€‚
+    if (g_bMirrorSurface)
+    {
+        float2 uv;
+        uv.x = inMirrorProj.x / inMirrorProj.w * 0.5f + 0.5f;
+        uv.y = -inMirrorProj.y / inMirrorProj.w * 0.5f + 0.5f;
+        workColor = tex2D(textureSampler, uv);
+    }
+    else
+    {
+        workColor = tex2D(textureSampler, inTexCood);
+    }
 
     if (g_bUseTexture)
     {
