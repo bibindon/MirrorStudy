@@ -39,6 +39,7 @@ LPD3DXEFFECT g_pEffect2 = NULL;
 bool g_bClose = false;
 
 LPDIRECT3DTEXTURE9 g_pRenderTarget = NULL;
+LPDIRECT3DTEXTURE9 g_pMirrorRenderTarget = NULL;
 
 LPDIRECT3DVERTEXDECLARATION9 g_pQuadDecl = NULL;
 HWND g_hWnd = NULL;
@@ -60,6 +61,8 @@ struct MeshInstance
     D3DXVECTOR3 center = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
     float radius = 1.0f;
     D3DXVECTOR3 position = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+    bool isMirrorSurface = false;
+    bool isGroundSurface = false;
 };
 
 std::vector<MeshInstance> g_meshInstances;
@@ -84,7 +87,11 @@ static void Cleanup();
 static void RenderPass1();
 static void RenderPass2();
 static void DrawFullscreenQuad();
-static bool AddMeshFromXFile(const TCHAR* pPath, const D3DXVECTOR3& position);
+static bool AddMeshFromXFile(const TCHAR* pPath,
+                             const D3DXVECTOR3& position,
+                             bool centerAtPosition,
+                             bool isMirrorSurface = false,
+                             bool isGroundSurface = false);
 static void ReleaseMeshResources();
 static void UpdateCamera(float deltaTime);
 static void UpdateFrame();
@@ -92,6 +99,13 @@ static D3DXVECTOR3 GetCameraForward();
 static D3DXVECTOR3 GetCameraFocusPoint();
 static bool OpenMeshFileDialog(HWND hWnd);
 static std::basic_string<TCHAR> BuildTexturePath(const TCHAR* meshPath, const char* textureFileName);
+static void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
+                                       const D3DXMATRIX& proj,
+                                       bool skipMirrorSurface,
+                                       bool skipGroundSurface,
+                                       bool useMirrorTextureForMirrorSurface);
+static void RenderMirrorTexture();
+static MeshInstance* GetMirrorMeshInstance();
 
 LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -253,10 +267,23 @@ void InitD3D(HWND hWnd)
 
     assert(hResult == S_OK);
 
-    bool bPlateLoadResult = AddMeshFromXFile(_T("res\\plate.x"), D3DXVECTOR3(0.0f, 0.0f, 0.0f));
+    bool bPlateLoadResult = AddMeshFromXFile(_T("res\\plate.x"),
+                                             D3DXVECTOR3(0.0f, 0.0f, 0.0f),
+                                             false,
+                                             false,
+                                             true);
     assert(bPlateLoadResult);
 
-    bool bCubeLoadResult = AddMeshFromXFile(_T("res\\cubeNormalInverse.x"), D3DXVECTOR3(0.0f, 0.0f, 0.0f));
+    bool bMirrorLoadResult = AddMeshFromXFile(_T("res\\plate.mirror.x"),
+                                              D3DXVECTOR3(0.0f, 0.1f, 0.0f),
+                                              false,
+                                              true,
+                                              false);
+    assert(bMirrorLoadResult);
+
+    bool bCubeLoadResult = AddMeshFromXFile(_T("res\\cubeNormalInverse.x"),
+                                            D3DXVECTOR3(0.0f, 0.0f, 0.0f),
+                                            false);
     assert(bCubeLoadResult);
 
     hResult = D3DXCreateEffectFromFile(g_pd3dDevice,
@@ -291,6 +318,16 @@ void InitD3D(HWND hWnd)
                                 &g_pRenderTarget);
     assert(hResult == S_OK);
 
+    hResult = D3DXCreateTexture(g_pd3dDevice,
+                                kWindowWidth,
+                                kWindowHeight,
+                                1,
+                                D3DUSAGE_RENDERTARGET,
+                                D3DFMT_A8R8G8B8,
+                                D3DPOOL_DEFAULT,
+                                &g_pMirrorRenderTarget);
+    assert(hResult == S_OK);
+
     D3DVERTEXELEMENT9 elems[] =
     {
         { 0,  0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
@@ -308,13 +345,18 @@ void Cleanup()
     SAFE_RELEASE(g_pEffect1);
     SAFE_RELEASE(g_pEffect2);
     SAFE_RELEASE(g_pFont);
+    SAFE_RELEASE(g_pMirrorRenderTarget);
     SAFE_RELEASE(g_pRenderTarget);
     SAFE_RELEASE(g_pQuadDecl);
     SAFE_RELEASE(g_pd3dDevice);
     SAFE_RELEASE(g_pD3D);
 }
 
-bool AddMeshFromXFile(const TCHAR* pPath, const D3DXVECTOR3& position)
+bool AddMeshFromXFile(const TCHAR* pPath,
+                     const D3DXVECTOR3& position,
+                     bool centerAtPosition,
+                     bool isMirrorSurface,
+                     bool isGroundSurface)
 {
     LPD3DXBUFFER pD3DXMtrlBuffer = NULL;
     LPD3DXMESH pMesh = NULL;
@@ -401,7 +443,9 @@ bool AddMeshFromXFile(const TCHAR* pPath, const D3DXVECTOR3& position)
     instance.materials.swap(materials);
     instance.textures.swap(textures);
     instance.numMaterials = dwNumMaterials;
-    instance.position = position - instance.center;
+    instance.position = centerAtPosition ? (position - instance.center) : position;
+    instance.isMirrorSurface = isMirrorSurface;
+    instance.isGroundSurface = isGroundSurface;
 
     g_meshInstances.push_back(instance);
 
@@ -541,7 +585,7 @@ bool OpenMeshFileDialog(HWND hWnd)
         return false;
     }
 
-    bool bLoaded = AddMeshFromXFile(szFile, GetCameraFocusPoint());
+    bool bLoaded = AddMeshFromXFile(szFile, GetCameraFocusPoint(), true);
     g_bMouseInitialized = false;
     return bLoaded;
 }
@@ -565,9 +609,167 @@ std::basic_string<TCHAR> BuildTexturePath(const TCHAR* meshPath, const char* tex
     return std::basic_string<TCHAR>(combinedPath);
 }
 
+MeshInstance* GetMirrorMeshInstance()
+{
+    for (auto& meshInstance : g_meshInstances)
+    {
+        if (meshInstance.isMirrorSurface)
+        {
+            return &meshInstance;
+        }
+    }
+
+    return NULL;
+}
+
+void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
+                                const D3DXMATRIX& proj,
+                                bool skipMirrorSurface,
+                                bool skipGroundSurface,
+                                bool useMirrorTextureForMirrorSurface)
+{
+    HRESULT hResult = g_pEffect1->SetTechnique("Technique1");
+    assert(hResult == S_OK);
+
+    UINT numPass = 0;
+    hResult = g_pEffect1->Begin(&numPass, 0);
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect1->BeginPass(0);
+    assert(hResult == S_OK);
+
+    D3DXMATRIX matWorld;
+    D3DXMATRIX matWorldViewProj;
+
+    for (const auto& meshInstance : g_meshInstances)
+    {
+        if (skipMirrorSurface && meshInstance.isMirrorSurface)
+        {
+            continue;
+        }
+
+        if (skipGroundSurface && meshInstance.isGroundSurface)
+        {
+            continue;
+        }
+
+        D3DXMatrixTranslation(&matWorld, meshInstance.position.x, meshInstance.position.y, meshInstance.position.z);
+        matWorldViewProj = matWorld * view * proj;
+
+        hResult = g_pEffect1->SetMatrix("g_matWorldViewProj", &matWorldViewProj);
+        assert(hResult == S_OK);
+
+        const bool useMirrorTexture = useMirrorTextureForMirrorSurface && meshInstance.isMirrorSurface && g_pMirrorRenderTarget != NULL;
+        hResult = g_pEffect1->SetBool("g_bUseLighting", !useMirrorTexture);
+        assert(hResult == S_OK);
+
+        hResult = g_pEffect1->SetBool("g_bUseTexture", TRUE);
+        assert(hResult == S_OK);
+
+        for (DWORD i = 0; i < meshInstance.numMaterials; i++)
+        {
+            LPDIRECT3DTEXTURE9 pTexture = useMirrorTexture ? g_pMirrorRenderTarget : meshInstance.textures[i];
+            hResult = g_pEffect1->SetTexture("texture1", pTexture);
+            assert(hResult == S_OK);
+
+            hResult = g_pEffect1->CommitChanges();
+            assert(hResult == S_OK);
+
+            hResult = meshInstance.pMesh->DrawSubset(i);
+            assert(hResult == S_OK);
+        }
+    }
+
+    hResult = g_pEffect1->EndPass();
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect1->End();
+    assert(hResult == S_OK);
+}
+
+void RenderMirrorTexture()
+{
+    MeshInstance* pMirrorMesh = GetMirrorMeshInstance();
+    if (pMirrorMesh == NULL)
+    {
+        return;
+    }
+
+    HRESULT hResult = E_FAIL;
+
+    LPDIRECT3DSURFACE9 pOldRenderTarget = NULL;
+    hResult = g_pd3dDevice->GetRenderTarget(0, &pOldRenderTarget);
+    assert(hResult == S_OK);
+
+    LPDIRECT3DSURFACE9 pOldDepthStencil = NULL;
+    hResult = g_pd3dDevice->GetDepthStencilSurface(&pOldDepthStencil);
+    assert(hResult == S_OK);
+
+    LPDIRECT3DSURFACE9 pMirrorRenderSurface = NULL;
+    hResult = g_pMirrorRenderTarget->GetSurfaceLevel(0, &pMirrorRenderSurface);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->SetRenderTarget(0, pMirrorRenderSurface);
+    assert(hResult == S_OK);
+
+    D3DXMATRIX matReflection;
+    const float mirrorPlaneY = pMirrorMesh->position.y;
+    D3DXPLANE mirrorPlane(0.0f, 1.0f, 0.0f, -mirrorPlaneY);
+    D3DXMatrixReflect(&matReflection, &mirrorPlane);
+
+    D3DXVECTOR3 eye = g_cameraPosition;
+    D3DXVECTOR3 target = GetCameraFocusPoint();
+    D3DXVECTOR3 up(0.0f, 1.0f, 0.0f);
+    D3DXVECTOR3 reflectedEye;
+    D3DXVECTOR3 reflectedTarget;
+    D3DXVECTOR3 reflectedUp;
+
+    D3DXVec3TransformCoord(&reflectedEye, &eye, &matReflection);
+    D3DXVec3TransformCoord(&reflectedTarget, &target, &matReflection);
+    D3DXVec3TransformNormal(&reflectedUp, &up, &matReflection);
+
+    D3DXMATRIX view;
+    D3DXMatrixLookAtLH(&view, &reflectedEye, &reflectedTarget, &reflectedUp);
+
+    D3DXMATRIX proj;
+    D3DXMatrixPerspectiveFovLH(&proj,
+                               D3DXToRadian(45),
+                               static_cast<float>(kWindowWidth) / static_cast<float>(kWindowHeight),
+                               1.0f,
+                               10000.0f);
+
+    hResult = g_pd3dDevice->Clear(0,
+                                  NULL,
+                                  D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
+                                  D3DCOLOR_XRGB(20, 20, 20),
+                                  1.0f,
+                                  0);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->BeginScene();
+    assert(hResult == S_OK);
+
+    RenderSceneToCurrentTarget(view, proj, true, true, false);
+
+    hResult = g_pd3dDevice->EndScene();
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->SetRenderTarget(0, pOldRenderTarget);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->SetDepthStencilSurface(pOldDepthStencil);
+    assert(hResult == S_OK);
+
+    SAFE_RELEASE(pMirrorRenderSurface);
+    SAFE_RELEASE(pOldDepthStencil);
+    SAFE_RELEASE(pOldRenderTarget);
+}
+
 void RenderPass1()
 {
     HRESULT hResult = E_FAIL;
+
+    RenderMirrorTexture();
 
     LPDIRECT3DSURFACE9 pOldRenderTarget = nullptr;
     hResult = g_pd3dDevice->GetRenderTarget(0, &pOldRenderTarget);
@@ -611,47 +813,7 @@ void RenderPass1()
     _tcscpy_s(msg, 100, _T("WASD:移動  Q/E:下降/上昇  マウス:回転  F1:Xファイル読込"));
     TextDraw(g_pFont, msg, 0, 0);
 
-    hResult = g_pEffect1->SetTechnique("Technique1");
-    assert(hResult == S_OK);
-
-    UINT numPass;
-    hResult = g_pEffect1->Begin(&numPass, 0);
-    assert(hResult == S_OK);
-
-    hResult = g_pEffect1->BeginPass(0);
-    assert(hResult == S_OK);
-
-    hResult = g_pEffect1->SetBool("g_bUseTexture", TRUE);
-    assert(hResult == S_OK);
-
-    for (const auto& meshInstance : g_meshInstances)
-    {
-        D3DXMatrixTranslation(&matWorld, meshInstance.position.x, meshInstance.position.y, meshInstance.position.z);
-        matWorldViewProj = matWorld * View * Proj;
-        hResult = g_pEffect1->SetMatrix("g_matWorldViewProj", &matWorldViewProj);
-        assert(hResult == S_OK);
-
-        hResult = g_pEffect1->SetBool("g_bUseTexture", TRUE);
-        assert(hResult == S_OK);
-
-        for (DWORD i = 0; i < meshInstance.numMaterials; i++)
-        {
-            hResult = g_pEffect1->SetTexture("texture1", meshInstance.textures[i]);
-            assert(hResult == S_OK);
-
-            hResult = g_pEffect1->CommitChanges();
-            assert(hResult == S_OK);
-
-            hResult = meshInstance.pMesh->DrawSubset(i);
-            assert(hResult == S_OK);
-        }
-    }
-
-    hResult = g_pEffect1->EndPass();
-    assert(hResult == S_OK);
-
-    hResult = g_pEffect1->End();
-    assert(hResult == S_OK);
+    RenderSceneToCurrentTarget(View, Proj, false, false, true);
 
     hResult = g_pd3dDevice->EndScene();
     assert(hResult == S_OK);

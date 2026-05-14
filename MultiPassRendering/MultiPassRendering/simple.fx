@@ -3,6 +3,7 @@ float4 g_lightNormal = { 0.3f, 1.0f, 0.5f, 0.0f };
 float3 g_ambient = { 0.3f, 0.3f, 0.3f };
 
 bool g_bUseTexture = true;
+bool g_bUseLighting = true;
 
 texture texture1;
 sampler textureSampler = sampler_state {
@@ -22,9 +23,16 @@ void VertexShader1(in  float4 inPosition  : POSITION,
 {
     outPosition = mul(inPosition, g_matWorldViewProj);
 
-    float lightIntensity = dot(inNormal, g_lightNormal);
-    outDiffuse.rgb = max(0, lightIntensity) + g_ambient;
-    outDiffuse.a = 1.0f;
+    if (g_bUseLighting)
+    {
+        float lightIntensity = dot(inNormal, g_lightNormal);
+        outDiffuse.rgb = max(0, lightIntensity) + g_ambient;
+        outDiffuse.a = 1.0f;
+    }
+    else
+    {
+        outDiffuse = 1.0f;
+    }
 
     outTexCood = inTexCood;
 }
