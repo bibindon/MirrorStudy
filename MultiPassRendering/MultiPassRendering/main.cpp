@@ -46,18 +46,14 @@ LPDIRECT3D9 g_pD3D = NULL;
 LPDIRECT3DDEVICE9 g_pd3dDevice = NULL;
 LPD3DXFONT g_pFont = NULL;
 LPD3DXEFFECT g_pEffect1 = NULL;
-LPD3DXEFFECT g_pEffect2 = NULL;
 
 bool g_bClose = false;
 
-// RenderPass1の結果を保持する通常シーン用RT。
-LPDIRECT3DTEXTURE9 g_pRenderTarget = NULL;
 // 鏡カメラから見た反射シーンを保持するRT。
 LPDIRECT3DTEXTURE9 g_pMirrorRenderTarget = NULL;
 // 鏡面の射影テクスチャ生成に使う鏡カメラのViewProjection。
 D3DXMATRIX g_matMirrorViewProj;
 
-LPDIRECT3DVERTEXDECLARATION9 g_pQuadDecl = NULL;
 HWND g_hWnd = NULL;
 LARGE_INTEGER g_qpcFrequency = { };
 LARGE_INTEGER g_prevFrameCounter = { };
@@ -98,26 +94,11 @@ struct TextureCacheEntry
 std::vector<MeshInstance> g_meshInstances;
 std::vector<TextureCacheEntry> g_textureCache;
 
-struct QuadVertex
-{
-    // フルスクリーンクアッドはスクリーン空間ではなくクリップ空間で直接出す。
-    float x;
-    float y;
-    float z;
-    float w;
-
-    // PostEffect側が参照する転送元RTのUV。
-    float u;
-    float v;
-};
-
 static void TextDraw(LPD3DXFONT pFont, TCHAR* text, int X, int Y);
 static void InitD3D(HWND hWnd);
 static void Cleanup();
 
 static void RenderPass1();
-static void RenderPass2();
-static void DrawFullscreenQuad();
 static bool AddMeshFromXFile(const TCHAR* pPath,
                              const D3DXVECTOR3& position,
                              bool centerAtPosition,
@@ -219,7 +200,6 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
             // メッセージが無い間だけ、入力更新と描画を回し続ける。
             UpdateFrame();
             RenderPass1();
-            RenderPass2();
         }
 
         if (g_bClose)
@@ -344,28 +324,7 @@ void InitD3D(HWND hWnd)
 
     assert(hResult == S_OK);
 
-    hResult = D3DXCreateEffectFromFile(g_pd3dDevice,
-                                       _T("simple2.fx"),
-                                       NULL,
-                                       NULL,
-                                       D3DXSHADER_DEBUG,
-                                       NULL,
-                                       &g_pEffect2,
-                                       NULL);
-
-    assert(hResult == S_OK);
-
-    // 通常シーンと鏡反射を別RTへ分離してから最後に合成する。
-    hResult = D3DXCreateTexture(g_pd3dDevice,
-                                kWindowWidth,
-                                kWindowHeight,
-                                1,
-                                D3DUSAGE_RENDERTARGET,
-                                D3DFMT_A8R8G8B8,
-                                D3DPOOL_DEFAULT,
-                                &g_pRenderTarget);
-    assert(hResult == S_OK);
-
+    // 鏡反射だけ専用RTへ描画し、通常シーンはバックバッファへ直接描く。
     hResult = D3DXCreateTexture(g_pd3dDevice,
                                 kWindowWidth,
                                 kWindowHeight,
@@ -375,17 +334,6 @@ void InitD3D(HWND hWnd)
                                 D3DPOOL_DEFAULT,
                                 &g_pMirrorRenderTarget);
     assert(hResult == S_OK);
-
-    // 最終転送パスはPosition/Texcoordだけ持つ単純な宣言を使う。
-    D3DVERTEXELEMENT9 elems[] =
-    {
-        { 0,  0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
-        { 0, 16, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
-        D3DDECL_END()
-    };
-
-    HRESULT hr = g_pd3dDevice->CreateVertexDeclaration(elems, &g_pQuadDecl);
-    assert(hr == S_OK);
 }
 
 // 確保した Direct3D リソースと入力状態を解放する。
@@ -395,11 +343,8 @@ void Cleanup()
     ReleaseMeshResources();
     ReleaseTextureCache();
     SAFE_RELEASE(g_pEffect1);
-    SAFE_RELEASE(g_pEffect2);
     SAFE_RELEASE(g_pFont);
     SAFE_RELEASE(g_pMirrorRenderTarget);
-    SAFE_RELEASE(g_pRenderTarget);
-    SAFE_RELEASE(g_pQuadDecl);
     SAFE_RELEASE(g_pd3dDevice);
     SAFE_RELEASE(g_pD3D);
 }
@@ -1124,24 +1069,13 @@ void RenderMirrorTexture()
     SAFE_RELEASE(pOldRenderTarget);
 }
 
-// 通常カメラのシーンを中間レンダーターゲットへ描画する。
+// 通常カメラのシーンをバックバッファへ直接描画する。
 void RenderPass1()
 {
     HRESULT hResult = E_FAIL;
 
-    // 反射RTを先に更新してから、通常カメラ視点のシーンを別RTへ描く。
+    // 反射RTを先に更新してから、通常カメラ視点のシーンを描く。
     RenderMirrorTexture();
-
-    LPDIRECT3DSURFACE9 pOldRenderTarget = nullptr;
-    hResult = g_pd3dDevice->GetRenderTarget(0, &pOldRenderTarget);
-    assert(hResult == S_OK);
-
-    LPDIRECT3DSURFACE9 pRenderTarget;
-    hResult = g_pRenderTarget->GetSurfaceLevel(0, &pRenderTarget);
-    assert(hResult == S_OK);
-
-    hResult = g_pd3dDevice->SetRenderTarget(0, pRenderTarget);
-    assert(hResult == S_OK);
 
     // 通常パス側はView/Projだけ組み立てれば、実メッシュ描画は共通関数へ渡せる。
     D3DXMATRIX View, Proj;
@@ -1178,103 +1112,8 @@ void RenderPass1()
     hResult = g_pd3dDevice->EndScene();
     assert(hResult == S_OK);
 
-    hResult = g_pd3dDevice->SetRenderTarget(0, pOldRenderTarget);
-    assert(hResult == S_OK);
-}
-
-// 中間レンダーターゲットの内容をバックバッファへ転送して表示する。
-void RenderPass2()
-{
-    HRESULT hResult = E_FAIL;
-
-    hResult = g_pd3dDevice->Clear(0,
-                                  NULL,
-                                  D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
-                                  D3DCOLOR_XRGB(0, 0, 0),
-                                  1.0f,
-                                  0);
-    assert(hResult == S_OK);
-
-    // 最終表示はRenderPass1の結果をそのまま全画面へ転送する。
-    hResult = g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
-    assert(hResult == S_OK);
-
-    hResult = g_pd3dDevice->BeginScene();
-    assert(hResult == S_OK);
-
-    hResult = g_pEffect2->SetTechnique("Technique1");
-    assert(hResult == S_OK);
-
-    UINT numPass = 0;
-    hResult = g_pEffect2->Begin(&numPass, 0);
-    assert(hResult == S_OK);
-
-    hResult = g_pEffect2->BeginPass(0);
-    assert(hResult == S_OK);
-
-    hResult = g_pEffect2->SetTexture("texture1", g_pRenderTarget);
-    assert(hResult == S_OK);
-
-    hResult = g_pEffect2->CommitChanges();
-    assert(hResult == S_OK);
-
-    DrawFullscreenQuad();
-
-    hResult = g_pEffect2->EndPass();
-    assert(hResult == S_OK);
-
-    hResult = g_pEffect2->End();
-    assert(hResult == S_OK);
-
-    hResult = g_pd3dDevice->EndScene();
-    assert(hResult == S_OK);
-
     hResult = g_pd3dDevice->Present(NULL, NULL, NULL, NULL);
     assert(hResult == S_OK);
-
-    hResult = g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, TRUE);
-    assert(hResult == S_OK);
-}
-
-// 中間レンダーターゲットを画面全体へ転送するクアッドを描画する。
-void DrawFullscreenQuad()
-{
-    QuadVertex v[4] { };
-
-    // クリップ空間の矩形（TriangleStrip）
-    float du = 0.5f / static_cast<float>(kWindowWidth);
-    float dv = 0.5f / static_cast<float>(kWindowHeight);
-
-    v[0].x = -1.0f;
-    v[0].y = -1.0f;
-    v[0].z = 0.0f;
-    v[0].w = 1.0f;
-    v[0].u = 0.0f + du;
-    v[0].v = 1.0f - dv;
-
-    v[1].x = -1.0f;
-    v[1].y = 1.0f;
-    v[1].z = 0.0f;
-    v[1].w = 1.0f;
-    v[1].u = 0.0f + du;
-    v[1].v = 0.0f + dv;
-
-    v[2].x = 1.0f;
-    v[2].y = -1.0f;
-    v[2].z = 0.0f;
-    v[2].w = 1.0f;
-    v[2].u = 1.0f - du;
-    v[2].v = 1.0f - dv;
-
-    v[3].x = 1.0f;
-    v[3].y = 1.0f;
-    v[3].z = 0.0f;
-    v[3].w = 1.0f;
-    v[3].u = 1.0f - du;
-    v[3].v = 0.0f + dv;
-
-    g_pd3dDevice->SetVertexDeclaration(g_pQuadDecl);
-    g_pd3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(QuadVertex));
 }
 
 // ウィンドウメッセージを処理し、終了やキー入力をアプリ状態へ反映する。

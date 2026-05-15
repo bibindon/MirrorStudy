@@ -23,9 +23,6 @@
     <FxCompile Include="simple.fx">
       <Filter>リソース ファイル</Filter>
     </FxCompile>
-    <FxCompile Include="simple2.fx">
-      <Filter>リソース ファイル</Filter>
-    </FxCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
