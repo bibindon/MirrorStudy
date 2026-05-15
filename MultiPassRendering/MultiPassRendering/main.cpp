@@ -926,7 +926,7 @@ void SetCursorLocked(bool isLocked)
 // 鏡カメラ用に、鏡面以外のメッシュを現在のレンダーターゲットへ描画する。
 void RenderSceneForMirrorTexture(const D3DXMATRIX& view, const D3DXMATRIX& proj)
 {
-    HRESULT hResult = g_pEffect1->SetTechnique("Technique1");
+    HRESULT hResult = g_pEffect1->SetTechnique("TechniqueNormal");
     assert(hResult == S_OK);
 
     UINT numPass = 0;
@@ -950,23 +950,11 @@ void RenderSceneForMirrorTexture(const D3DXMATRIX& view, const D3DXMATRIX& proj)
         D3DXMatrixTranslation(&matWorld, meshInstance.position.x, meshInstance.position.y, meshInstance.position.z);
         matWorldViewProj = matWorld * view * proj;
 
-        // 鏡面だけはワールド座標から鏡カメラ射影UVを作るため、World行列も渡す。
+        // エフェクト側で使うWorld行列とViewProjection済み行列を渡す。
         hResult = g_pEffect1->SetMatrix("g_matWorld", &matWorld);
         assert(hResult == S_OK);
 
         hResult = g_pEffect1->SetMatrix("g_matWorldViewProj", &matWorldViewProj);
-        assert(hResult == S_OK);
-
-        hResult = g_pEffect1->SetBool("g_bUseLighting", TRUE);
-        assert(hResult == S_OK);
-
-        hResult = g_pEffect1->SetBool("g_bMirrorSurface", FALSE);
-        assert(hResult == S_OK);
-
-        hResult = g_pEffect1->SetMatrix("g_matMirrorViewProj", &g_matMirrorViewProj);
-        assert(hResult == S_OK);
-
-        hResult = g_pEffect1->SetBool("g_bUseTexture", TRUE);
         assert(hResult == S_OK);
 
         // subset単位にtexture1だけ差し替え、Effectの同一Technique内で順に描く。
@@ -993,7 +981,7 @@ void RenderSceneForMirrorTexture(const D3DXMATRIX& view, const D3DXMATRIX& proj)
 // 通常カメラ用に、鏡面へ反射テクスチャを貼りながらシーンを描画する。
 void RenderSceneForMainView(const D3DXMATRIX& view, const D3DXMATRIX& proj)
 {
-    HRESULT hResult = g_pEffect1->SetTechnique("Technique1");
+    HRESULT hResult = g_pEffect1->SetTechnique("TechniqueNormal");
     assert(hResult == S_OK);
 
     UINT numPass = 0;
@@ -1008,6 +996,11 @@ void RenderSceneForMainView(const D3DXMATRIX& view, const D3DXMATRIX& proj)
 
     for (const auto& meshInstance : g_meshInstances)
     {
+        if (meshInstance.isMirrorSurface)
+        {
+            continue;
+        }
+
         // 各メッシュは平行移動だけなのでWorldはtranslationのみで構成する。
         D3DXMatrixTranslation(&matWorld, meshInstance.position.x, meshInstance.position.y, meshInstance.position.z);
         matWorldViewProj = matWorld * view * proj;
@@ -1019,45 +1012,63 @@ void RenderSceneForMainView(const D3DXMATRIX& view, const D3DXMATRIX& proj)
         hResult = g_pEffect1->SetMatrix("g_matWorldViewProj", &matWorldViewProj);
         assert(hResult == S_OK);
 
-        bool useMirrorTexture = false;
-        if (meshInstance.isMirrorSurface)
+        // subset単位にtexture1だけ差し替え、Effectの同一Technique内で順に描く。
+        for (DWORD i = 0; i < meshInstance.numMaterials; i++)
         {
-            if (g_pMirrorRenderTarget != NULL)
-            {
-                useMirrorTexture = true;
-            }
-        }
+            hResult = g_pEffect1->SetTexture("texture1", meshInstance.textures[i]);
+            assert(hResult == S_OK);
 
-        if (useMirrorTexture)
-        {
-            hResult = g_pEffect1->SetBool("g_bUseLighting", FALSE);
+            hResult = g_pEffect1->CommitChanges();
+            assert(hResult == S_OK);
+
+            hResult = meshInstance.pMesh->DrawSubset(i);
             assert(hResult == S_OK);
         }
-        else
+    }
+
+    hResult = g_pEffect1->EndPass();
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect1->End();
+    assert(hResult == S_OK);
+
+    if (g_pMirrorRenderTarget == NULL)
+    {
+        return;
+    }
+
+    hResult = g_pEffect1->SetTechnique("TechniqueMirror");
+    assert(hResult == S_OK);
+
+    numPass = 0;
+    hResult = g_pEffect1->Begin(&numPass, 0);
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect1->BeginPass(0);
+    assert(hResult == S_OK);
+
+    for (const auto& meshInstance : g_meshInstances)
+    {
+        if (meshInstance.isMirrorSurface == false)
         {
-            hResult = g_pEffect1->SetBool("g_bUseLighting", TRUE);
-            assert(hResult == S_OK);
+            continue;
         }
 
-        hResult = g_pEffect1->SetBool("g_bMirrorSurface", useMirrorTexture);
+        D3DXMatrixTranslation(&matWorld, meshInstance.position.x, meshInstance.position.y, meshInstance.position.z);
+        matWorldViewProj = matWorld * view * proj;
+
+        hResult = g_pEffect1->SetMatrix("g_matWorld", &matWorld);
+        assert(hResult == S_OK);
+
+        hResult = g_pEffect1->SetMatrix("g_matWorldViewProj", &matWorldViewProj);
         assert(hResult == S_OK);
 
         hResult = g_pEffect1->SetMatrix("g_matMirrorViewProj", &g_matMirrorViewProj);
         assert(hResult == S_OK);
 
-        hResult = g_pEffect1->SetBool("g_bUseTexture", TRUE);
-        assert(hResult == S_OK);
-
-        // subset単位にtexture1だけ差し替え、Effectの同一Technique内で順に描く。
         for (DWORD i = 0; i < meshInstance.numMaterials; i++)
         {
-            LPDIRECT3DTEXTURE9 pTexture = meshInstance.textures[i];
-            if (useMirrorTexture)
-            {
-                pTexture = g_pMirrorRenderTarget;
-            }
-
-            hResult = g_pEffect1->SetTexture("texture1", pTexture);
+            hResult = g_pEffect1->SetTexture("texture1", g_pMirrorRenderTarget);
             assert(hResult == S_OK);
 
             hResult = g_pEffect1->CommitChanges();
