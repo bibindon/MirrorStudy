@@ -290,17 +290,17 @@ void InitD3D(HWND hWnd)
     assert(bPlateLoadResult);
 
     // 鏡面メッシュ。反射RTの参照先でもあり、反射平面の定義元でもある。
-    if (true)
+    if (false)
     {
         bool bMirrorLoadResult = AddMeshFromXFile(_T("res\\plate.mirror.x"),
-                                                  D3DXVECTOR3(0.0f, 10.1f, 0.0f),
+                                                  D3DXVECTOR3(2.0f, 10.1f, 4.0f),
                                                   true);
         assert(bMirrorLoadResult);
     }
     else
     {
         bool bMirrorLoadResult = AddMeshFromXFile(_T("res\\plate.mirror.wall.x"),
-                                                  D3DXVECTOR3(0.0f, 10.1f, 0.0f),
+                                                  D3DXVECTOR3(2.0f, 10.1f, 4.0f),
                                                   true);
         assert(bMirrorLoadResult);
     }
