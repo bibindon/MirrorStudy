@@ -72,9 +72,6 @@ struct MeshInstance
     std::vector<D3DMATERIAL9> materials;
     std::vector<LPDIRECT3DTEXTURE9> textures;
     DWORD numMaterials = 0;
-    // 読み込み時に計算したローカル空間の包囲球。追加配置やデバッグの基準に使う。
-    D3DXVECTOR3 center = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
-    float radius = 1.0f;
     // ワールド配置は回転なしの平行移動だけで持っている。
     D3DXVECTOR3 position = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
     // 鏡面だけはメッシュ形状から取り出した平面情報を反射カメラ生成へ使う。
@@ -100,7 +97,6 @@ static void Cleanup();
 static void RenderPass1();
 static bool AddMeshFromXFile(const TCHAR* pPath,
                              const D3DXVECTOR3& position,
-                             bool centerAtPosition,
                              bool isMirrorSurface = false);
 static void ReleaseMeshResources();
 static void UpdateCamera(float deltaTime);
@@ -288,21 +284,18 @@ void InitD3D(HWND hWnd)
 
     // シーンの基準床。反射RTにも映る対象として扱う。
     bool bPlateLoadResult = AddMeshFromXFile(_T("res\\plate.x"),
-                                             D3DXVECTOR3(0.0f, 0.0f, 0.0f),
-                                             false);
+                                             D3DXVECTOR3(0.0f, 0.0f, 0.0f));
     assert(bPlateLoadResult);
 
     // 鏡面メッシュ。反射RTの参照先でもあり、反射平面の定義元でもある。
     bool bMirrorLoadResult = AddMeshFromXFile(_T("res\\plate.mirror.x"),
                                               D3DXVECTOR3(0.0f, 10.1f, 0.0f),
-                                              false,
                                               true);
     assert(bMirrorLoadResult);
 
     // シーン内で反射対象になる立方体。
     bool bCubeLoadResult = AddMeshFromXFile(_T("res\\cubeNormalInverse.x"),
-                                            D3DXVECTOR3(0.0f, 0.0f, 0.0f),
-                                            false);
+                                            D3DXVECTOR3(0.0f, 0.0f, 0.0f));
     assert(bCubeLoadResult);
 
     hResult = D3DXCreateEffectFromFile(g_pd3dDevice,
@@ -344,7 +337,6 @@ void Cleanup()
 // X ファイルを読み込み、メッシュインスタンスとしてシーンへ追加する。
 bool AddMeshFromXFile(const TCHAR* pPath,
                      const D3DXVECTOR3& position,
-                     bool centerAtPosition,
                      bool isMirrorSurface)
 {
     LPD3DXBUFFER pD3DXMtrlBuffer = NULL;
@@ -409,35 +401,13 @@ bool AddMeshFromXFile(const TCHAR* pPath,
         }
     }
 
-    // 追加配置やデバッグ出力で使うため、ローカル空間の包囲球を先に求める。
-    void* pVertices = NULL;
-    hResult = pMesh->LockVertexBuffer(D3DLOCK_READONLY, &pVertices);
-    if (SUCCEEDED(hResult))
-    {
-        D3DXComputeBoundingSphere(static_cast<const D3DXVECTOR3*>(pVertices),
-                                  pMesh->GetNumVertices(),
-                                  D3DXGetFVFVertexSize(pMesh->GetFVF()),
-                                  &instance.center,
-                                  &instance.radius);
-        pMesh->UnlockVertexBuffer();
-    }
-
     SAFE_RELEASE(pD3DXMtrlBuffer);
 
     instance.pMesh = pMesh;
     instance.materials.swap(materials);
     instance.textures.swap(textures);
     instance.numMaterials = dwNumMaterials;
-    // centerAtPosition=true の場合だけ、包囲球中心が指定位置へ来るよう補正する。
-    if (centerAtPosition)
-    {
-        instance.position = position - instance.center;
-    }
-    else
-    {
-        instance.position = position;
-    }
-
+    instance.position = position;
     instance.isMirrorSurface = isMirrorSurface;
 
     if (isMirrorSurface)
@@ -839,8 +809,8 @@ bool OpenMeshFileDialog(HWND hWnd)
         return false;
     }
 
-    // 追加読込モデルは包囲球中心が現在の注視点へ来るように置く。
-    bool bLoaded = AddMeshFromXFile(szFile, GetCameraFocusPoint(), true);
+    // 追加読込モデルは現在の注視点へ置く。
+    bool bLoaded = AddMeshFromXFile(szFile, GetCameraFocusPoint());
     if (g_bCursorLocked)
     {
         POINT centerScreenPos = GetClientCenterScreenPoint(hWnd);
