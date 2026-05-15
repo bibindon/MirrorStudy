@@ -81,7 +81,6 @@ struct MeshInstance
     D3DXVECTOR3 mirrorPlanePoint = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
     D3DXVECTOR3 mirrorPlaneNormal = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
     bool isMirrorSurface = false;
-    bool isGroundSurface = false;
 };
 
 struct TextureCacheEntry
@@ -102,8 +101,7 @@ static void RenderPass1();
 static bool AddMeshFromXFile(const TCHAR* pPath,
                              const D3DXVECTOR3& position,
                              bool centerAtPosition,
-                             bool isMirrorSurface = false,
-                             bool isGroundSurface = false);
+                             bool isMirrorSurface = false);
 static void ReleaseMeshResources();
 static void UpdateCamera(float deltaTime);
 static void UpdateFrame();
@@ -118,7 +116,6 @@ static bool ComputeMirrorPlaneFromMesh(LPD3DXMESH pMesh, D3DXVECTOR3* pPlanePoin
 static void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
                                        const D3DXMATRIX& proj,
                                        bool skipMirrorSurface,
-                                       bool skipGroundSurface,
                                        bool useMirrorTextureForMirrorSurface);
 static void RenderMirrorTexture();
 static MeshInstance* GetMirrorMeshInstance();
@@ -294,17 +291,14 @@ void InitD3D(HWND hWnd)
     // シーンの基準床。反射RTにも映る対象として扱う。
     bool bPlateLoadResult = AddMeshFromXFile(_T("res\\plate.x"),
                                              D3DXVECTOR3(0.0f, 0.0f, 0.0f),
-                                             false,
-                                             false,
-                                             true);
+                                             false);
     assert(bPlateLoadResult);
 
     // 鏡面メッシュ。反射RTの参照先でもあり、反射平面の定義元でもある。
     bool bMirrorLoadResult = AddMeshFromXFile(_T("res\\plate.mirror.x"),
                                               D3DXVECTOR3(0.0f, 10.1f, 0.0f),
                                               false,
-                                              true,
-                                              false);
+                                              true);
     assert(bMirrorLoadResult);
 
     // シーン内で反射対象になる立方体。
@@ -353,8 +347,7 @@ void Cleanup()
 bool AddMeshFromXFile(const TCHAR* pPath,
                      const D3DXVECTOR3& position,
                      bool centerAtPosition,
-                     bool isMirrorSurface,
-                     bool isGroundSurface)
+                     bool isMirrorSurface)
 {
     LPD3DXBUFFER pD3DXMtrlBuffer = NULL;
     LPD3DXMESH pMesh = NULL;
@@ -448,7 +441,6 @@ bool AddMeshFromXFile(const TCHAR* pPath,
     }
 
     instance.isMirrorSurface = isMirrorSurface;
-    instance.isGroundSurface = isGroundSurface;
 
     if (isMirrorSurface)
     {
@@ -944,7 +936,6 @@ void SetCursorLocked(bool isLocked)
 void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
                                 const D3DXMATRIX& proj,
                                 bool skipMirrorSurface,
-                                bool skipGroundSurface,
                                 bool useMirrorTextureForMirrorSurface)
 {
     // この関数は「指定されたカメラで3Dメッシュ群を1回描く」処理だけを担当する。
@@ -966,14 +957,6 @@ void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
         if (skipMirrorSurface)
         {
             if (meshInstance.isMirrorSurface)
-            {
-                continue;
-            }
-        }
-
-        if (skipGroundSurface)
-        {
-            if (meshInstance.isGroundSurface)
             {
                 continue;
             }
@@ -1116,8 +1099,8 @@ void RenderMirrorTexture()
     hResult = g_pd3dDevice->BeginScene();
     assert(hResult == S_OK);
 
-    // 鏡面自身だけスキップし、地面は反射に含める。
-    RenderSceneToCurrentTarget(view, proj, true, false, false);
+    // 鏡面自身だけスキップする。
+    RenderSceneToCurrentTarget(view, proj, true, false);
 
     hResult = g_pd3dDevice->EndScene();
     assert(hResult == S_OK);
@@ -1171,7 +1154,7 @@ void RenderPass1()
     _tcscpy_s(msg, 100, _T("WASD:移動  Q/E:下降/上昇  Esc:カーソル切替  F1:Xファイル読込"));
     TextDraw(g_pFont, msg, 0, 0);
 
-    RenderSceneToCurrentTarget(View, Proj, false, false, true);
+    RenderSceneToCurrentTarget(View, Proj, false, true);
 
     hResult = g_pd3dDevice->EndScene();
     assert(hResult == S_OK);
