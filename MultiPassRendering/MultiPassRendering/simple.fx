@@ -2,7 +2,7 @@ float4x4 g_matWorldViewProj;
 float4x4 g_matWorld;
 float4x4 g_matMirrorViewProj;
 float4 g_lightNormal = { 0.3f, 1.0f, 0.5f, 0.0f };
-float3 g_ambient = { 0.3f, 0.3f, 0.3f };
+float3 g_ambient = { 0.1f, 0.1f, 0.1f };
 
 bool g_bUseTexture = true;
 bool g_bUseLighting = true;

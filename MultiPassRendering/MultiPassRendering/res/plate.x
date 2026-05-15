@@ -104,7 +104,7 @@ Frame Root {
            16.000000;
            0.000000; 0.000000; 0.000000;;
            0.000000; 0.000000; 0.000000;;
-          TextureFilename {"white4x4.bmp";}
+          TextureFilename {"whiteWall.png";}
         }
       }
     }
