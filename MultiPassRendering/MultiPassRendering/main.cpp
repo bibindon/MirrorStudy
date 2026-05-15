@@ -6,15 +6,24 @@
 #endif
 
 #include <d3d9.h>
-#include <d3dx9.h>
-#include <commdlg.h>
-#include <windowsx.h>
+#include <d3dx9mesh.h>
+#include <d3dx9shader.h>
+#include <d3dx9tex.h>
+#include <Windows.h>
 #include <shlwapi.h>
 #include <string>
 #include <tchar.h>
 #include <cassert>
 #include <crtdbg.h>
 #include <vector>
+#include <d3dx9core.h>
+#include <d3dx9effect.h>
+#include <d3dx9math.h>
+#include <cmath>
+#include <d3d9types.h>
+#include <d3d9caps.h>
+#include <d3dx9math.inl>
+#include <sal.h>
 
 #pragma comment( lib, "comdlg32.lib" )
 #pragma comment( lib, "shlwapi.lib" )
