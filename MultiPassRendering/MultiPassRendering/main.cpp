@@ -113,10 +113,8 @@ static std::basic_string<TCHAR> BuildTexturePath(const TCHAR* meshPath, const ch
 static HRESULT GetOrCreateTexture(const std::basic_string<TCHAR>& texturePath, LPDIRECT3DTEXTURE9* ppTexture);
 static void ReleaseTextureCache();
 static bool ComputeMirrorPlaneFromMesh(LPD3DXMESH pMesh, D3DXVECTOR3* pPlanePoint, D3DXVECTOR3* pPlaneNormal);
-static void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
-                                       const D3DXMATRIX& proj,
-                                       bool skipMirrorSurface,
-                                       bool useMirrorTextureForMirrorSurface);
+static void RenderSceneForMirrorTexture(const D3DXMATRIX& view, const D3DXMATRIX& proj);
+static void RenderSceneForMainView(const D3DXMATRIX& view, const D3DXMATRIX& proj);
 static void RenderMirrorTexture();
 static MeshInstance* GetMirrorMeshInstance();
 static POINT GetClientCenterScreenPoint(HWND hWnd);
@@ -932,13 +930,9 @@ void SetCursorLocked(bool isLocked)
     }
 }
 
-// 指定されたカメラ行列でシーン内のメッシュを現在のレンダーターゲットへ描画する。
-void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
-                                const D3DXMATRIX& proj,
-                                bool skipMirrorSurface,
-                                bool useMirrorTextureForMirrorSurface)
+// 鏡カメラ用に、鏡面以外のメッシュを現在のレンダーターゲットへ描画する。
+void RenderSceneForMirrorTexture(const D3DXMATRIX& view, const D3DXMATRIX& proj)
 {
-    // この関数は「指定されたカメラで3Dメッシュ群を1回描く」処理だけを担当する。
     HRESULT hResult = g_pEffect1->SetTechnique("Technique1");
     assert(hResult == S_OK);
 
@@ -954,12 +948,9 @@ void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
 
     for (const auto& meshInstance : g_meshInstances)
     {
-        if (skipMirrorSurface)
+        if (meshInstance.isMirrorSurface)
         {
-            if (meshInstance.isMirrorSurface)
-            {
-                continue;
-            }
+            continue;
         }
 
         // 各メッシュは平行移動だけなのでWorldはtranslationのみで構成する。
@@ -973,23 +964,88 @@ void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
         hResult = g_pEffect1->SetMatrix("g_matWorldViewProj", &matWorldViewProj);
         assert(hResult == S_OK);
 
-        // 鏡面だけは、反射RTを通常テクスチャの代わりに読む分岐へ切り替える。
-        bool useMirrorTexture = false;
-        if (useMirrorTextureForMirrorSurface)
+        hResult = g_pEffect1->SetBool("g_bUseLighting", TRUE);
+        assert(hResult == S_OK);
+
+        hResult = g_pEffect1->SetBool("g_bMirrorSurface", FALSE);
+        assert(hResult == S_OK);
+
+        hResult = g_pEffect1->SetMatrix("g_matMirrorViewProj", &g_matMirrorViewProj);
+        assert(hResult == S_OK);
+
+        hResult = g_pEffect1->SetBool("g_bUseTexture", TRUE);
+        assert(hResult == S_OK);
+
+        // subset単位にtexture1だけ差し替え、Effectの同一Technique内で順に描く。
+        for (DWORD i = 0; i < meshInstance.numMaterials; i++)
         {
-            if (meshInstance.isMirrorSurface)
+            hResult = g_pEffect1->SetTexture("texture1", meshInstance.textures[i]);
+            assert(hResult == S_OK);
+
+            hResult = g_pEffect1->CommitChanges();
+            assert(hResult == S_OK);
+
+            hResult = meshInstance.pMesh->DrawSubset(i);
+            assert(hResult == S_OK);
+        }
+    }
+
+    hResult = g_pEffect1->EndPass();
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect1->End();
+    assert(hResult == S_OK);
+}
+
+// 通常カメラ用に、鏡面へ反射テクスチャを貼りながらシーンを描画する。
+void RenderSceneForMainView(const D3DXMATRIX& view, const D3DXMATRIX& proj)
+{
+    HRESULT hResult = g_pEffect1->SetTechnique("Technique1");
+    assert(hResult == S_OK);
+
+    UINT numPass = 0;
+    hResult = g_pEffect1->Begin(&numPass, 0);
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect1->BeginPass(0);
+    assert(hResult == S_OK);
+
+    D3DXMATRIX matWorld;
+    D3DXMATRIX matWorldViewProj;
+
+    for (const auto& meshInstance : g_meshInstances)
+    {
+        // 各メッシュは平行移動だけなのでWorldはtranslationのみで構成する。
+        D3DXMatrixTranslation(&matWorld, meshInstance.position.x, meshInstance.position.y, meshInstance.position.z);
+        matWorldViewProj = matWorld * view * proj;
+
+        // エフェクト側で使うWorld行列とViewProjection済み行列を渡す。
+        hResult = g_pEffect1->SetMatrix("g_matWorld", &matWorld);
+        assert(hResult == S_OK);
+
+        hResult = g_pEffect1->SetMatrix("g_matWorldViewProj", &matWorldViewProj);
+        assert(hResult == S_OK);
+
+        bool useMirrorTexture = false;
+        if (meshInstance.isMirrorSurface)
+        {
+            if (g_pMirrorRenderTarget != NULL)
             {
-                if (g_pMirrorRenderTarget != NULL)
-                {
-                    useMirrorTexture = true;
-                }
+                useMirrorTexture = true;
             }
         }
 
-        hResult = g_pEffect1->SetBool("g_bUseLighting", !useMirrorTexture);
-        assert(hResult == S_OK);
+        if (useMirrorTexture)
+        {
+            hResult = g_pEffect1->SetBool("g_bUseLighting", FALSE);
+            assert(hResult == S_OK);
+        }
+        else
+        {
+            hResult = g_pEffect1->SetBool("g_bUseLighting", TRUE);
+            assert(hResult == S_OK);
+        }
 
-        // 鏡面だけ射影テクスチャ用の分岐を有効にする。
         hResult = g_pEffect1->SetBool("g_bMirrorSurface", useMirrorTexture);
         assert(hResult == S_OK);
 
@@ -1100,7 +1156,7 @@ void RenderMirrorTexture()
     assert(hResult == S_OK);
 
     // 鏡面自身だけスキップする。
-    RenderSceneToCurrentTarget(view, proj, true, false);
+    RenderSceneForMirrorTexture(view, proj);
 
     hResult = g_pd3dDevice->EndScene();
     assert(hResult == S_OK);
@@ -1154,7 +1210,7 @@ void RenderPass1()
     _tcscpy_s(msg, 100, _T("WASD:移動  Q/E:下降/上昇  Esc:カーソル切替  F1:Xファイル読込"));
     TextDraw(g_pFont, msg, 0, 0);
 
-    RenderSceneToCurrentTarget(View, Proj, false, true);
+    RenderSceneForMainView(View, Proj);
 
     hResult = g_pd3dDevice->EndScene();
     assert(hResult == S_OK);
