@@ -438,7 +438,15 @@ bool AddMeshFromXFile(const TCHAR* pPath,
     instance.textures.swap(textures);
     instance.numMaterials = dwNumMaterials;
     // centerAtPosition=true の場合だけ、包囲球中心が指定位置へ来るよう補正する。
-    instance.position = centerAtPosition ? (position - instance.center) : position;
+    if (centerAtPosition)
+    {
+        instance.position = position - instance.center;
+    }
+    else
+    {
+        instance.position = position;
+    }
+
     instance.isMirrorSurface = isMirrorSurface;
     instance.isGroundSurface = isGroundSurface;
 
@@ -500,11 +508,14 @@ HRESULT GetOrCreateTexture(const std::basic_string<TCHAR>& texturePath, LPDIRECT
     // 同一ファイルパスなら既存テクスチャを再利用し、COM参照だけ増やす。
     for (const auto& cacheEntry : g_textureCache)
     {
-        if (cacheEntry.path == texturePath && cacheEntry.pTexture != NULL)
+        if (cacheEntry.path == texturePath)
         {
-            cacheEntry.pTexture->AddRef();
-            *ppTexture = cacheEntry.pTexture;
-            return S_OK;
+            if (cacheEntry.pTexture != NULL)
+            {
+                cacheEntry.pTexture->AddRef();
+                *ppTexture = cacheEntry.pTexture;
+                return S_OK;
+            }
         }
     }
 
@@ -552,12 +563,27 @@ void ReleaseTextureCache()
 // メッシュの先頭三角形から鏡面として使う平面の点と法線を求める。
 bool ComputeMirrorPlaneFromMesh(LPD3DXMESH pMesh, D3DXVECTOR3* pPlanePoint, D3DXVECTOR3* pPlaneNormal)
 {
-    if (pMesh == NULL || pPlanePoint == NULL || pPlaneNormal == NULL)
+    if (pMesh == NULL)
     {
         return false;
     }
 
-    if ((pMesh->GetFVF() & D3DFVF_XYZ) == 0 || pMesh->GetNumFaces() == 0)
+    if (pPlanePoint == NULL)
+    {
+        return false;
+    }
+
+    if (pPlaneNormal == NULL)
+    {
+        return false;
+    }
+
+    if ((pMesh->GetFVF() & D3DFVF_XYZ) == 0)
+    {
+        return false;
+    }
+
+    if (pMesh->GetNumFaces() == 0)
     {
         return false;
     }
@@ -677,7 +703,12 @@ void UpdateFrame()
 // マウスカーソルの移動量からカメラの向きを更新する。
 void UpdateMouseLook()
 {
-    if (!g_bCursorLocked || g_hWnd == NULL)
+    if (!g_bCursorLocked)
+    {
+        return;
+    }
+
+    if (g_hWnd == NULL)
     {
         return;
     }
@@ -691,7 +722,18 @@ void UpdateMouseLook()
     LONG deltaX = currentScreenPos.x - centerScreenPos.x;
     LONG deltaY = currentScreenPos.y - centerScreenPos.y;
 
-    if (deltaX != 0 || deltaY != 0)
+    bool bMouseMoved = false;
+    if (deltaX != 0)
+    {
+        bMouseMoved = true;
+    }
+
+    if (deltaY != 0)
+    {
+        bMouseMoved = true;
+    }
+
+    if (bMouseMoved)
     {
         g_cameraYaw += static_cast<float>(deltaX) * kCameraRotationSpeed;
         g_cameraPitch -= static_cast<float>(deltaY) * kCameraRotationSpeed;
@@ -921,14 +963,20 @@ void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
 
     for (const auto& meshInstance : g_meshInstances)
     {
-        if (skipMirrorSurface && meshInstance.isMirrorSurface)
+        if (skipMirrorSurface)
         {
-            continue;
+            if (meshInstance.isMirrorSurface)
+            {
+                continue;
+            }
         }
 
-        if (skipGroundSurface && meshInstance.isGroundSurface)
+        if (skipGroundSurface)
         {
-            continue;
+            if (meshInstance.isGroundSurface)
+            {
+                continue;
+            }
         }
 
         // 各メッシュは平行移動だけなのでWorldはtranslationのみで構成する。
@@ -943,7 +991,18 @@ void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
         assert(hResult == S_OK);
 
         // 鏡面だけは、反射RTを通常テクスチャの代わりに読む分岐へ切り替える。
-        const bool useMirrorTexture = useMirrorTextureForMirrorSurface && meshInstance.isMirrorSurface && g_pMirrorRenderTarget != NULL;
+        bool useMirrorTexture = false;
+        if (useMirrorTextureForMirrorSurface)
+        {
+            if (meshInstance.isMirrorSurface)
+            {
+                if (g_pMirrorRenderTarget != NULL)
+                {
+                    useMirrorTexture = true;
+                }
+            }
+        }
+
         hResult = g_pEffect1->SetBool("g_bUseLighting", !useMirrorTexture);
         assert(hResult == S_OK);
 
@@ -960,7 +1019,12 @@ void RenderSceneToCurrentTarget(const D3DXMATRIX& view,
         // subset単位にtexture1だけ差し替え、Effectの同一Technique内で順に描く。
         for (DWORD i = 0; i < meshInstance.numMaterials; i++)
         {
-            LPDIRECT3DTEXTURE9 pTexture = useMirrorTexture ? g_pMirrorRenderTarget : meshInstance.textures[i];
+            LPDIRECT3DTEXTURE9 pTexture = meshInstance.textures[i];
+            if (useMirrorTexture)
+            {
+                pTexture = g_pMirrorRenderTarget;
+            }
+
             hResult = g_pEffect1->SetTexture("texture1", pTexture);
             assert(hResult == S_OK);
 
@@ -1129,28 +1193,34 @@ LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
     case WM_KEYDOWN:
     {
-        if (wParam == VK_ESCAPE && (lParam & 0x40000000) == 0)
+        if (wParam == VK_ESCAPE)
         {
-            SetCursorLocked(!g_bCursorLocked);
-            return 0;
+            if ((lParam & 0x40000000) == 0)
+            {
+                SetCursorLocked(!g_bCursorLocked);
+                return 0;
+            }
         }
 
-        if (wParam == VK_F1 && (lParam & 0x40000000) == 0)
+        if (wParam == VK_F1)
         {
-            const bool wasCursorLocked = g_bCursorLocked;
-            if (wasCursorLocked)
+            if ((lParam & 0x40000000) == 0)
             {
-                SetCursorLocked(false);
+                const bool wasCursorLocked = g_bCursorLocked;
+                if (wasCursorLocked)
+                {
+                    SetCursorLocked(false);
+                }
+
+                OpenMeshFileDialog(hWnd);
+
+                if (wasCursorLocked)
+                {
+                    SetCursorLocked(true);
+                }
+
+                return 0;
             }
-
-            OpenMeshFileDialog(hWnd);
-
-            if (wasCursorLocked)
-            {
-                SetCursorLocked(true);
-            }
-
-            return 0;
         }
         break;
     }
