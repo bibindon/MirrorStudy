@@ -114,6 +114,8 @@ static void RenderSceneForMainView(const D3DXMATRIX& view, const D3DXMATRIX& pro
 static void RenderMirrorTexture();
 static MeshInstance* GetMirrorMeshInstance();
 static POINT GetClientCenterScreenPoint(HWND hWnd);
+static void ShowCursorUntilVisible();
+static void HideCursorUntilHidden();
 static void SetCursorLocked(bool isLocked);
 
 LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -881,6 +883,22 @@ POINT GetClientCenterScreenPoint(HWND hWnd)
     return centerScreenPos;
 }
 
+// ShowCursorの内部カウンタを表示状態になるまで進める。
+void ShowCursorUntilVisible()
+{
+    while (ShowCursor(TRUE) < 0)
+    {
+    }
+}
+
+// ShowCursorの内部カウンタを非表示状態になるまで進める。
+void HideCursorUntilHidden()
+{
+    while (ShowCursor(FALSE) >= 0)
+    {
+    }
+}
+
 // カーソルロック状態を切り替え、ロック時はカーソルを画面中央へ戻す。
 void SetCursorLocked(bool isLocked)
 {
@@ -893,10 +911,7 @@ void SetCursorLocked(bool isLocked)
 
     if (isLocked)
     {
-        // ShowCursorは内部カウンタなので、目的状態になるまで呼び切る。
-        while (ShowCursor(FALSE) >= 0)
-        {
-        }
+        HideCursorUntilHidden();
 
         POINT centerScreenPos = GetClientCenterScreenPoint(g_hWnd);
         BOOL bCursorMoved = SetCursorPos(centerScreenPos.x, centerScreenPos.y);
@@ -904,9 +919,7 @@ void SetCursorLocked(bool isLocked)
     }
     else
     {
-        while (ShowCursor(TRUE) < 0)
-        {
-        }
+        ShowCursorUntilVisible();
     }
 }
 
@@ -1208,6 +1221,29 @@ LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         PostQuitMessage(0);
         g_bClose = true;
+        return 0;
+    }
+    case WM_ACTIVATE:
+    {
+        if (LOWORD(wParam) == WA_INACTIVE)
+        {
+            SetCursorLocked(false);
+            return 0;
+        }
+
+        if (g_bCursorLocked)
+        {
+            HideCursorUntilHidden();
+
+            POINT centerScreenPos = GetClientCenterScreenPoint(hWnd);
+            BOOL bCursorMoved = SetCursorPos(centerScreenPos.x, centerScreenPos.y);
+            assert(bCursorMoved != FALSE);
+        }
+        else
+        {
+            ShowCursorUntilVisible();
+        }
+
         return 0;
     }
     case WM_KEYDOWN:
